@@ -1,4 +1,4 @@
-# Dynamic Workflow Design
+# Dynamic Workflow Design System
 
 ## Introduction
 
