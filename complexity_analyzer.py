@@ -6,6 +6,7 @@ import networkx as nx
 
 from models import Workflow, SubTask, ComplexityMetrics
 from utils import gpt
+from prompts import COMPLEXITY_ANALYSIS_TEMPLATE
 
 
 # -------------- Stage 4: Complexity / uncertainty metric -------------- #
@@ -19,35 +20,6 @@ W_CRITICAL_PATH = 0.15
 W_PARALLEL_EFFICIENCY = 0.1
 W_MODE_HETEROGENEITY = 0.1
 W_RESOURCE_CONFLICTS = 0.1
-
-COMPLEXITY_ANALYSIS_TEMPLATE = """
-Analyze the complexity and uncertainty of this task:
-
-Task: "{task}"
-Sub-tasks: {subtasks}
-
-Rate each factor from 1-10:
-1. Domain complexity (specialized knowledge required)
-2. Coordination complexity (inter-task dependencies)  
-3. Computational complexity (processing requirements)
-4. Temporal uncertainty (unpredictable timing)
-5. Resource uncertainty (variable resource needs)
-6. Outcome uncertainty (unpredictable results)
-
-Return JSON with:
-{{
-    "domain_complexity": 1-10,
-    "coordination_complexity": 1-10, 
-    "computational_complexity": 1-10,
-    "temporal_uncertainty": 1-10,
-    "resource_uncertainty": 1-10,
-    "outcome_uncertainty": 1-10,
-    "overall_uncertainty": 0.0-1.0,
-    "requires_replanning": true/false,
-    "risk_factors": ["factor1", "factor2", ...],
-    "mitigation_strategies": ["strategy1", "strategy2", ...],
-}}
-"""
 
 
 def ambiguity_score(text: str) -> float:

@@ -35,7 +35,7 @@ def gpt(prompt: str, *, model: str = "gpt-4o", temperature: float = 0.2,
 def load_gaia() -> Iterator[Tuple[str, str]]:
     dataset = load_dataset("gaia-benchmark/GAIA", "2023_level1", split="validation")
     for item in dataset:
-        yield item["id"], item["task"]
+        yield item["task_id"], item["Question"]
 
 
 def save_json(data: dict, filepath: str, ensure_ascii: bool = False) -> None:

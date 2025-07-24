@@ -6,65 +6,10 @@ import networkx as nx
 from models import Workflow, WorkflowQualityMetrics, ExecutionEstimate, ComplexityMetrics
 from complexity_analyzer import calculate_parallel_efficiency
 from utils import gpt
+from prompts import QUALITY_VALIDATION_TEMPLATE, EXECUTION_ESTIMATION_TEMPLATE
 
 
 # ----------------------- Stage 4.5: Validation & Performance Metrics ----------------------- #
-
-QUALITY_VALIDATION_TEMPLATE = """
-Evaluate the quality of this workflow design:
-
-Main Task: "{main_task}"
-Sub-tasks: {subtasks}
-Dependencies: {dependencies}
-
-Rate each aspect from 0.0 to 1.0:
-1. Completeness: Do the sub-tasks fully cover the main task?
-2. Coherence: Are the dependencies logical and well-structured?
-3. Efficiency: Is the workflow well-organized for execution?
-4. Feasibility: Are all sub-tasks realistic and achievable?
-
-Return JSON with:
-{{
-    "completeness_score": 0.0-1.0,
-    "coherence_score": 0.0-1.0,
-    "efficiency_score": 0.0-1.0,
-    "feasibility_score": 0.0-1.0,
-    "validation_errors": ["error1", "error2", ...],
-    "warnings": ["warning1", "warning2", ...],
-    "suggestions": ["suggestion1", "suggestion2", ...],
-    "missing_subtasks": ["missing1", "missing2", ...],
-    "redundant_subtasks": ["redundant1", "redundant2", ...],
-    "problematic_dependencies": ["dep1", "dep2", ...]
-}}
-"""
-
-EXECUTION_ESTIMATION_TEMPLATE = """
-Estimate execution time and resource requirements for this workflow:
-
-Sub-tasks with modes: {subtasks_with_modes}
-Dependencies: {dependencies}
-Parallel blocks: {parallel_blocks}
-
-For each sub-task, estimate:
-- Time required (in hours)
-- CPU/compute requirements (low/medium/high)
-- Memory requirements (low/medium/high)  
-- Network/IO requirements (low/medium/high)
-
-Return JSON with:
-{{
-    "task_estimates": {{
-        "task_id": {{"time_hours": X, "cpu": "low/medium/high", "memory": "low/medium/high", "io": "low/medium/high"}},
-        ...
-    }},
-    "critical_path_time": X.X,
-    "total_sequential_time": X.X,
-    "estimated_parallel_time": X.X,
-    "bottlenecks": ["bottleneck1", "bottleneck2", ...],
-    "resource_conflicts": ["conflict1", "conflict2", ...],
-    "cost_factors": {{"compute": X.X, "storage": X.X, "network": X.X}}
-}}
-"""
 
 
 def validate_workflow_quality(workflow: Workflow) -> WorkflowQualityMetrics:

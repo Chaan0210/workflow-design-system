@@ -6,52 +6,10 @@ import networkx as nx
 
 from models import SubTask, ModeResult
 from utils import gpt
+from prompts import CONTEXTUAL_ANALYSIS_TEMPLATE, HYBRID_ANALYSIS_TEMPLATE
 
 
 # ------------ Stage 3: Wide vs Deep classification per sub‑task ---------- #
-
-WIDE_KW = {"research", "survey", "compare", "gather", "various", "broad", "explore", "investigate", "collect", "multiple", "diverse", "extensive", "search", "find", "discover", "review", "study", "examine", "scan", "browse", "lookup", "fetch", "retrieve", "compile", "aggregate"}
-DEEP_KW = {"analyze", "solve", "create", "optimize", "reason", "critique", "develop", "calculate", "design", "implement", "construct", "derive", "synthesize", "formulate", "engineer", "build", "process", "compute", "evaluate", "assess", "determine", "conclude", "infer", "deduce"}
-
-CONTEXTUAL_ANALYSIS_TEMPLATE = """
-Analyze the following sub-task and determine its primary nature:
-
-Task: "{description}"
-Context: This is part of a larger workflow for: "{main_task}"
-
-Consider:
-1. Does this task primarily require gathering diverse external information? (WIDE)
-2. Does this task primarily require deep reasoning/analysis of limited information? (DEEP)  
-3. What is the information processing pattern?
-
-Return JSON with:
-{{
-    "primary_mode": "WIDE" or "DEEP",
-    "confidence": 0.0-1.0,
-    "reasoning": "brief explanation",
-    "is_hybrid": true/false,
-    "secondary_mode": "WIDE"/"DEEP"/null,
-    "information_requirements": ["requirement1", "requirement2", ...],
-    "processing_complexity": "low"/"medium"/"high"
-}}
-"""
-
-HYBRID_ANALYSIS_TEMPLATE = """
-This task appears to have both WIDE and DEEP characteristics. Determine the optimal execution strategy:
-
-Task: "{description}"
-Initial analysis: {initial_analysis}
-
-Return JSON with:
-{{
-    "execution_strategy": "sequential_wide_then_deep" / "sequential_deep_then_wide" / "parallel_hybrid" / "dynamic_switching",
-    "phase_breakdown": [
-        {{"phase": 1, "mode": "WIDE/DEEP", "description": "what to do in this phase"}},
-        ...
-    ],
-    "transition_criteria": "when/how to switch between modes"
-}}
-"""
 
 
 def classify_mode(st: SubTask, main_task_context: str = "") -> ModeResult:
