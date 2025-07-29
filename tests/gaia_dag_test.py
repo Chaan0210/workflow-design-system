@@ -5,6 +5,8 @@ import pathlib
 import itertools
 import datetime
 from dotenv import load_dotenv
+import json
+import networkx as nx
 
 # Add project root to sys.path to allow for module imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -14,6 +16,35 @@ from decomposition import decompose
 from dag_builder import build_dag
 from visualizer import create_visualization
 from models import Workflow, ComplexityMetrics, WorkflowQualityMetrics, ExecutionEstimate
+
+def dump_dag_snapshot(dag: nx.DiGraph, outpath):
+    data = {
+        "nodes": [
+            {
+                "id": n,
+                **{k: v for k, v in dag.nodes[n].items() if k != "obj"}
+            }
+            for n in dag.nodes()
+        ],
+        "edges": [
+            {
+                "u": u,
+                "v": v,
+                **d
+            }
+            for u, v, d in dag.edges(data=True)
+        ]
+    }
+    with open(outpath, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def simple_consistency_checks(dag: nx.DiGraph, subtasks_len: int):
+    assert dag.number_of_nodes() == subtasks_len, "Node count mismatch"
+    assert nx.is_directed_acyclic_graph(dag), "Graph must be a DAG"
+    topo = list(nx.topological_sort(dag))
+    assert len(topo) == dag.number_of_nodes(), "Topological sort must cover all nodes"
+    for u, v in dag.edges():
+        assert u in dag.nodes and v in dag.nodes, "Edge endpoint missing"
 
 def main():
     # Load environment variables from .env file

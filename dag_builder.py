@@ -1,197 +1,167 @@
 # dag_builder.py
 import json
 import itertools
-from typing import List, Dict
+from typing import List, Dict, Tuple
 from collections import defaultdict
 import networkx as nx
 
 from models import SubTask
-from utils import gpt
-from prompts import EDGE_TEMPLATE, RESOURCE_DEPENDENCY_TEMPLATE, CONFIDENCE_TEMPLATE
+from utils import call_gpt_json
+from prompts import DEPENDENCY_STRICT_TEMPLATE, RESOURCE_DEPENDENCY_STRICT_TEMPLATE
 
+LOW_CONF_L = 0.4
+CUTOFF = 0.5
 
-# ------------- Stage 2: DAG & parallel/serial analysis ---------- #
+def _validate_dependency_json(d: dict):
+    assert isinstance(d.get("dependent"), bool)
+    assert isinstance(d.get("confidence"), (int, float))
+    c = float(d["confidence"])
+    if not (0.0 <= c <= 1.0):
+        raise ValueError("confidence must be within [0,1]")
 
-def parse_yes_no(response: str) -> bool:
-    """
-    Intelligently parses a string response to determine if it means "yes" or "no".
-    Handles plain text, JSON, and markdown-formatted JSON.
-    Returns True for "yes" (can start in parallel), False for "no" (is a dependency).
-    """
-    clean_response = response.strip().lower()
+def _validate_resource_json(d: dict):
+    assert isinstance(d.get("resource_conflict"), bool)
+    assert isinstance(d.get("shared_resources"), list)
 
-    # Handle markdown code blocks
-    if clean_response.startswith("```json"):
-        clean_response = clean_response[7:-4].strip()
-    elif clean_response.startswith("```"):
-        clean_response = clean_response[3:-3].strip()
+def ask_dependency(a: SubTask, b: SubTask) -> Tuple[bool, float, str]:
+    prompt = DEPENDENCY_STRICT_TEMPLATE.format(a=a.description, b=b.description)
+    data = call_gpt_json(
+        prompt,
+        system="Return ONLY valid JSON. No prose.",
+        validator=_validate_dependency_json,
+    )
+    return bool(data["dependent"]), float(data["confidence"]), data.get("reason", "")
 
-    # Try parsing as JSON
-    try:
-        # Remove outer quotes if they exist (e.g., '"no"')
-        if clean_response.startswith('"') and clean_response.endswith('"'):
-            clean_response = clean_response[1:-1]
+def ask_resource_conflict(a: SubTask, b: SubTask) -> Tuple[bool, List[str]]:
+    prompt = RESOURCE_DEPENDENCY_STRICT_TEMPLATE.format(a=a.description, b=b.description)
+    data = call_gpt_json(
+        prompt,
+        system="Return ONLY valid JSON. No prose.",
+        validator=_validate_resource_json,
+    )
+    return bool(data["resource_conflict"]), list(data.get("shared_resources", []))
 
-        data = json.loads(clean_response)
-        if isinstance(data, dict):
-            if data.get("no") is True: return False
-            if data.get("yes") is False: return False
-            if data.get("answer", "").lower() == "no": return False
-            return True # Default to "yes"
-        elif isinstance(data, str):
-            return "no" not in data
-    except (json.JSONDecodeError, TypeError):
-        pass
-
-    # Treat as plain text
-    return not clean_response.startswith("no")
-
-
-def build_dag(subtasks: List[SubTask]) -> nx.DiGraph:
-    G = nx.DiGraph()
-    for st in subtasks:
-        G.add_node(st.id, obj=st)
-    
-    # Build dependency matrix with confidence scores
-    dependency_matrix = {}
-    print("\n--- BUILDING DAG ---")
-    for a, b in itertools.permutations(subtasks, 2):
-        print(f"\nAnalyzing dependency: {a.id} -> {b.id}")
-
-        # Check basic dependency
-        prompt = EDGE_TEMPLATE.format(a=a.description, b=b.description)
-        print("\n--- DEPENDENCY PROMPT ---")
-        print(prompt)
-        print("-------------------------")
-        ans_str = gpt(prompt,
-                  system="Answer with exactly yes or no.", temperature=0)
-        print("\n--- DEPENDENCY LLM RESPONSE ---")
-        print(ans_str)
-        print("-----------------------------")
-        
-        is_dependent = not parse_yes_no(ans_str)
-
-        if is_dependent:
-            print(f"Result: Tasks are dependent.")
-            # Get confidence score for this dependency
-            prompt = CONFIDENCE_TEMPLATE.format(a=a.description, b=b.description)
-            print("\n--- CONFIDENCE PROMPT ---")
-            print(prompt)
-            print("-------------------------")
-            try:
-                confidence_str = gpt(prompt,
-                                     system="Return only a number.", temperature=0)
-                print("\n--- CONFIDENCE LLM RESPONSE ---")
-                print(confidence_str)
-                print("-----------------------------")
-                confidence = float(confidence_str)
-            except (ValueError, TypeError):
-                print("Could not parse confidence, using default 0.7")
-                confidence = 0.7  # default confidence
-            
-            # Check resource conflicts
-            prompt = RESOURCE_DEPENDENCY_TEMPLATE.format(a=a.description, b=b.description)
-            print("\n--- RESOURCE CONFLICT PROMPT ---")
-            print(prompt)
-            print("--------------------------------")
-            try:
-                resource_info_str = gpt(prompt,
-                                             system="Return valid JSON only.", temperature=0)
-                print("\n--- RESOURCE CONFLICT LLM RESPONSE ---")
-                print(resource_info_str)
-                print("------------------------------------")
-                
-                # Clean the response from markdown code blocks
-                if resource_info_str.strip().startswith("```json"):
-                    resource_info_str = resource_info_str.strip()[7:-4]
-
-                resource_info = json.loads(resource_info_str)
-                has_conflict = resource_info.get("resource_conflict", False)
-                shared_resources = resource_info.get("shared_resources", [])
-            except (json.JSONDecodeError, TypeError):
-                print("Could not parse resource conflict JSON.")
-                has_conflict = False
-                shared_resources = []
-            
-            # Add edge with metadata
-            if confidence > 0.5:  # Only add high-confidence dependencies
-                print(f"\nAdding edge {a.id} -> {b.id} with confidence {confidence}")
-                G.add_edge(a.id, b.id, 
-                          confidence=confidence,
-                          has_resource_conflict=has_conflict,
-                          shared_resources=shared_resources)
-                dependency_matrix[(a.id, b.id)] = confidence
-            else:
-                print(f"\nSkipping edge {a.id} -> {b.id} due to low confidence {confidence}")
-        else:
-            print(f"Result: Tasks are not dependent.")
-
-    # Cycle detection and resolution
-    G = resolve_cycles_intelligently(G, dependency_matrix)
-    
-    # Add parallel block identification
-    G = identify_parallel_blocks(G)
-    
-    print("\n--- DAG BUILDING COMPLETE ---")
-    return G
-
-
-def resolve_cycles_intelligently(G: nx.DiGraph, dependency_matrix: Dict) -> nx.DiGraph:
+def resolve_cycles_intelligently(G: nx.DiGraph, edge_conf: Dict[Tuple[str, str], float]) -> nx.DiGraph:
     try:
         while True:
             cycles = list(nx.find_cycle(G, orientation="original"))
             if not cycles:
                 break
-            
-            # Find the weakest edge in the cycle (lowest confidence)
-            weakest_edge = None
-            min_confidence = float('inf')
-            
-            for edge in cycles:
-                edge_key = (edge[0], edge[1])
-                confidence = dependency_matrix.get(edge_key, 0.5)
-                if confidence < min_confidence:
-                    min_confidence = confidence
-                    weakest_edge = edge_key
-            
-            if weakest_edge:
-                G.remove_edge(weakest_edge[0], weakest_edge[1])
-                print(f"Removed cycle edge {weakest_edge} with confidence {min_confidence}")
-            
+
+            weakest = None
+            min_c = float('inf')
+            for u, v, _ in cycles:
+                c = edge_conf.get((u, v), 0.5)
+                if c < min_c:
+                    min_c = c
+                    weakest = (u, v)
+            if weakest:
+                G.remove_edge(*weakest)
     except nx.NetworkXNoCycle:
         pass
-    
     return G
 
+def post_process_graph(G: nx.DiGraph) -> None:
+    # 1) confidence rounding/format
+    for u, v, d in G.edges(data=True):
+        if "confidence" in d:
+            d["confidence"] = round(float(d["confidence"]), 3)
 
-def identify_parallel_blocks(G: nx.DiGraph) -> nx.DiGraph:
-    levels = {}
-    try:
-        for node in nx.topological_sort(G):
-            preds = list(G.predecessors(node))
-            if not preds:
-                levels[node] = 0
-            else:
-                levels[node] = max(levels[p] for p in preds) + 1
-    except nx.NetworkXUnfeasible as e:
-        raise ValueError("Graph contains cycles. Run resolve_cycles_intelligently first.") from e
-
-    parallel_blocks = defaultdict(list)
-    for node, level in levels.items():
-        parallel_blocks[level].append(node)
-
-    for level, nodes in parallel_blocks.items():
-        for node in nodes:
-            G.nodes[node]['parallel_level'] = level
-            G.nodes[node]['parallel_peers'] = [n for n in nodes if n != node]
-
+    # 2) ensure critical path, parallel levels
     try:
         critical_path = nx.algorithms.dag.dag_longest_path(G)
     except (nx.NetworkXUnfeasible, nx.NetworkXError):
         critical_path = []
 
-    for i, node in enumerate(critical_path):
-        G.nodes[node]['on_critical_path'] = True
-        G.nodes[node]['critical_path_position'] = i
+    for n in G.nodes():
+        G.nodes[n]['on_critical_path'] = False
+        G.nodes[n]['critical_path_position'] = None
+
+    for i, n in enumerate(critical_path):
+        G.nodes[n]['on_critical_path'] = True
+        G.nodes[n]['critical_path_position'] = i
+
+    # 3) parallel levels
+    try:
+        levels = {}
+        for node in nx.topological_sort(G):
+            preds = list(G.predecessors(node))
+            levels[node] = 0 if not preds else max(levels[p] for p in preds) + 1
+
+        parallel_blocks = defaultdict(list)
+        for node, level in levels.items():
+            parallel_blocks[level].append(node)
+
+        for level, nodes in parallel_blocks.items():
+            for node in nodes:
+                G.nodes[node]['parallel_level'] = level
+                G.nodes[node]['parallel_peers'] = [n for n in nodes if n != node]
+    except nx.NetworkXUnfeasible:
+        # 이미 cycle 처리 실패 시 예외 던져서 상위에서 잡게 하는 편이 안전
+        raise ValueError("Graph still contains cycles after post-process().")
+
+def build_dag(subtasks: List[SubTask]) -> nx.DiGraph:
+    G = nx.DiGraph()
+    for st in subtasks:
+        G.add_node(st.id, obj=st)
+
+    edge_conf_map: Dict[Tuple[str, str], float] = {}
+    low_conf_candidates: List[Tuple[str, str, float]] = []
+
+    # --- 양방향 분석 ---
+    for a, b in itertools.combinations(subtasks, 2):
+        dep_ab, conf_ab, _ = ask_dependency(a, b)
+        dep_ba, conf_ba, _ = ask_dependency(b, a)
+
+        # 충돌 해소
+        if dep_ab and dep_ba:
+            # 둘 다 의존이라면 더 높은 confidence만 남기고 나머지 버림
+            if conf_ab >= conf_ba:
+                dep_ba = False
+            else:
+                dep_ab = False
+
+        # AB edge 처리
+        if dep_ab:
+            has_conflict, shared = ask_resource_conflict(a, b)
+            if conf_ab >= CUTOFF:
+                G.add_edge(a.id, b.id,
+                           confidence=conf_ab,
+                           has_resource_conflict=has_conflict,
+                           shared_resources=shared)
+                edge_conf_map[(a.id, b.id)] = conf_ab
+            elif conf_ab >= LOW_CONF_L:
+                low_conf_candidates.append((a.id, b.id, conf_ab))
+
+        # BA edge 처리
+        if dep_ba:
+            has_conflict, shared = ask_resource_conflict(b, a)
+            if conf_ba >= CUTOFF:
+                G.add_edge(b.id, a.id,
+                           confidence=conf_ba,
+                           has_resource_conflict=has_conflict,
+                           shared_resources=shared)
+                edge_conf_map[(b.id, a.id)] = conf_ba
+            elif conf_ba >= LOW_CONF_L:
+                low_conf_candidates.append((b.id, a.id, conf_ba))
+
+    # --- 후처리 보정 패스: low_conf_candidates 중 cycle을 만들지 않는 한도에서 추가 ---
+    # 규칙: 동일 노드 pair가 이미 다른 방향으로 연결돼 있으면 생략.
+    for u, v, c in sorted(low_conf_candidates, key=lambda x: -x[2]):
+        if not G.has_edge(u, v) and not G.has_edge(v, u):
+            G.add_edge(u, v,
+                       confidence=round(c, 3),
+                       has_resource_conflict=False,
+                       shared_resources=[])
+
+    # --- 사이클 제거 ---
+    G = resolve_cycles_intelligently(G, edge_conf_map)
+
+    # --- 여전히 사이클이면 에러 ---
+    if not nx.is_directed_acyclic_graph(G):
+        raise ValueError("Graph still contains cycles after resolution.")
+
+    # --- 일관된 post process ---
+    post_process_graph(G)
 
     return G

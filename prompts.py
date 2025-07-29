@@ -33,30 +33,31 @@ Return JSON with:
 
 # ------------------ From dag_builder.py ------------------ #
 
-EDGE_TEMPLATE = """
-For the following two sub‑tasks from the same parent task, answer with STRICT JSON "yes" or "no" only:
+DEPENDENCY_STRICT_TEMPLATE = """
+You MUST answer in **valid JSON** only, matching this schema exactly:
 
-Sub‑task A: "{a}"
-Sub‑task B: "{b}"
+{{
+  "dependent": true/false,     // true if B CANNOT start before A finishes
+  "confidence": 0.0-1.0,       // numeric
+  "reason": "short reason"     // <= 200 chars
+}}
 
-Question: Can B start before A is completed?
+Definition: B depends on A if B cannot start before A finishes.
+
+A: "{a}"
+B: "{b}"
 """
 
-RESOURCE_DEPENDENCY_TEMPLATE = """
-Analyze if these two sub-tasks have any shared resource dependencies or conflicts.
-Return JSON with "resource_conflict": true/false and "shared_resources": [list of shared resources].
+RESOURCE_DEPENDENCY_STRICT_TEMPLATE = """
+You MUST answer in **valid JSON** only, matching this schema exactly:
 
-Sub‑task A: "{a}"
-Sub‑task B: "{b}"
-"""
+{{
+  "resource_conflict": true/false,
+  "shared_resources": ["..."]
+}}
 
-CONFIDENCE_TEMPLATE = """
-Rate your confidence (0.0 to 1.0) in the dependency relationship between these tasks:
-
-Sub‑task A: "{a}"  
-Sub‑task B: "{b}"
-
-Return only a number between 0.0 and 1.0.
+A: "{a}"
+B: "{b}"
 """
 
 # ------------------ From decomposition.py ------------------ #

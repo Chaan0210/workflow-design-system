@@ -13,3 +13,5 @@ __pycache__/
 
 # Outputs
 workflow_outputs/
+
+CLAUDE.md
