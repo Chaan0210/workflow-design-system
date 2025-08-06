@@ -1,6 +1,8 @@
 # approaches/bidirectional.py
+import asyncio
 from typing import Dict, Any, List, Tuple
 import networkx as nx
+import itertools
 
 from models import SubTask
 from workflow_engine import WorkflowEngine
@@ -8,16 +10,6 @@ from .base import DAGApproach
 
 
 class BidirectionalApproach(DAGApproach):
-    """
-    Bidirectional DAG building approach.
-    
-    Uses WorkflowEngine to perform bidirectional pairwise dependency analysis:
-    1. For all pairs (A, B), query LLM for A→B and B→A dependencies
-    2. Apply confidence cutoff (≥0.5) to accept edges  
-    3. Use pending edges (0.4 ≤ conf < 0.5) as backups
-    4. Resolve cycles by removing lowest confidence edges
-    """
-    
     def __init__(self):
         super().__init__("bidirectional")
         self.workflow_engine = WorkflowEngine()

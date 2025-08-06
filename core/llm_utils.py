@@ -1,5 +1,6 @@
 # core/llm_utils.py
-from typing import Dict, Any, Optional, Callable
+import asyncio
+from typing import Dict, Any, Optional, Callable, List, Tuple
 from utils import gpt, call_gpt_json
 from prompts import PromptManager as CentralizedPromptManager
 
@@ -41,6 +42,68 @@ class LLMClient:
         except Exception as e:
             print(f"LLM call failed, using fallback: {str(e)}")
             return fallback_data
+    
+    async def call_json_async(self, prompt: str, system: str = "Return ONLY valid JSON. No prose.", 
+                             validator: Optional[Callable] = None, model: Optional[str] = None,
+                             temperature: Optional[float] = None) -> Dict[str, Any]:
+        """비동기 JSON LLM 호출"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, 
+            lambda: self.call_json(prompt, system, validator, model, temperature)
+        )
+    
+    async def batch_dependency_analysis(self, dependency_pairs: List[Tuple], original_task: str = "", 
+                                      batch_size: int = 10) -> Dict[Tuple, Tuple[bool, float]]:
+        """병렬 의존성 분석 배치 처리"""
+        results = {}
+        
+        # 배치 단위로 작업 분할
+        for i in range(0, len(dependency_pairs), batch_size):
+            batch = dependency_pairs[i:i + batch_size]
+            print(f"   📤 Processing batch {i//batch_size + 1}/{(len(dependency_pairs)-1)//batch_size + 1} ({len(batch)} pairs)")
+            
+            # 배치 내 모든 요청을 병렬로 처리
+            tasks = []
+            for task_a, task_b in batch:
+                prompt = CentralizedPromptManager.format_dependency_prompt(
+                    original_task, task_a.description, task_b.description
+                )
+                tasks.append(self._analyze_dependency_async(prompt, (task_a, task_b)))
+            
+            # 병렬 실행
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # 결과 수집
+            for j, result in enumerate(batch_results):
+                pair = batch[j]
+                if isinstance(result, Exception):
+                    print(f"      ❌ Failed dependency check for {pair[0].id} → {pair[1].id}: {result}")
+                    results[pair] = (False, 0.3)  # 폴백값
+                else:
+                    results[pair] = result
+        
+        return results
+    
+    async def _analyze_dependency_async(self, prompt: str, pair: Tuple) -> Tuple[bool, float]:
+        """개별 의존성 분석 (비동기)"""
+        try:
+            data = await self.call_json_async(
+                prompt, 
+                validator=lambda d: self._validate_dependency_json(d)
+            )
+            return bool(data["dependent"]), float(data["confidence"])
+        except Exception:
+            return False, 0.3
+    
+    def _validate_dependency_json(self, d: dict) -> None:
+        """의존성 JSON 검증"""
+        if not isinstance(d, dict):
+            raise ValueError(f"Expected dict, got {type(d)}")
+        if "dependent" not in d:
+            raise ValueError("Missing 'dependent' field")
+        if "confidence" not in d:
+            raise ValueError("Missing 'confidence' field")
 
 
 # Legacy PromptManager - now delegates to centralized prompts.py

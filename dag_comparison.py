@@ -11,22 +11,33 @@ from core.validation_utils import WorkflowValidator, QualityMetricsValidator
 from approaches.bidirectional import BidirectionalApproach
 from approaches.hierarchical import HierarchicalApproach  
 from approaches.matrix import MatrixApproach
-
+from approaches.bidirectional_parallel import BidirectionalParallelApproach
+from approaches.matrix_parallel import MatrixParallelApproach
 
 class DAGComparison:
-    """Main DAG comparison framework."""
+    """Main DAG comparison framework with optimization support."""
     
-    def __init__(self):
+    def __init__(self, include_parallel_approaches: bool = True):
+        # 기존 접근법들
         self.approaches = {
             "bidirectional": BidirectionalApproach(),
             "hierarchical": HierarchicalApproach(),
             "matrix": MatrixApproach()
         }
+        
+        # 병렬 최적화 접근법들 추가
+        if include_parallel_approaches:
+            self.approaches.update({
+                "bidirectional_parallel": BidirectionalParallelApproach(),
+                "matrix_parallel": MatrixParallelApproach()
+            })
+        
         self.evaluator = ComparisonEvaluator()
         self.workflow_validator = WorkflowValidator()
     
-    def compare_approaches(self, task: str, subtasks: Optional[List[SubTask]] = None) -> Dict[str, Any]:
-        """Compare all DAG building approaches."""
+    def compare_approaches(self, task: str, subtasks: Optional[List[SubTask]] = None, 
+                         approaches_filter: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Compare DAG building approaches with optional filtering."""
         
         # Use workflow engine for decomposition if needed
         if subtasks is None:
@@ -45,12 +56,22 @@ class DAGComparison:
                 print(f"      {st.id}: {st.description}")
                 print(f"           Mode: {st.mode}")
         
+        # 접근법 필터링
+        active_approaches = self.approaches
+        if approaches_filter:
+            active_approaches = {
+                name: approach for name, approach in self.approaches.items() 
+                if name in approaches_filter
+            }
+            print(f"\n🔍 Filtering to approaches: {list(active_approaches.keys())}")
+        
         print(f"\n🔄 Comparing DAG approaches for {len(subtasks)} subtasks...")
+        print(f"   Active approaches: {list(active_approaches.keys())}")
         
         results = {}
         
         # Test each approach
-        for name, approach in self.approaches.items():
+        for name, approach in active_approaches.items():
             print(f"\n{'='*60}")
             print(f"🚀 Running {name.upper()} approach...")
             print('='*60)
@@ -75,6 +96,17 @@ class DAGComparison:
                     print(f"✅ {name.upper()} approach completed successfully")
                     print(f"   Build time: {metrics.get('build_time', 0):.3f}s")
                     print(f"   LLM calls: {metrics.get('total_llm_calls', 0)}")
+                    
+                    # 병렬 최적화 관련 메트릭 출력
+                    if metrics.get('parallel_optimization'):
+                        print(f"   🚀 Parallel optimization: ENABLED")
+                        if 'analysis_time' in metrics:
+                            print(f"   ⚡ Analysis time: {metrics['analysis_time']:.2f}s")
+                        if 'pairs_per_second' in metrics:
+                            print(f"   📊 Analysis rate: {metrics['pairs_per_second']:.1f} pairs/sec")
+                        if 'parallel_efficiency' in metrics:
+                            print(f"   🔀 Parallel efficiency: {metrics['parallel_efficiency']:.3f}")
+                    
                     if 'fallback_used' in metrics:
                         print(f"   Used fallback: {metrics['fallback_used']}")
                     
@@ -130,6 +162,90 @@ class DAGComparison:
         
         return results
     
+    def compare_optimization_impact(self, task: str, subtasks: Optional[List[SubTask]] = None) -> Dict[str, Any]:
+        """최적화 전후 성능 비교"""
+        print("\n🔬 OPTIMIZATION IMPACT ANALYSIS")
+        print("="*80)
+        
+        # 원본 vs 최적화 버전 비교
+        original_approaches = ["bidirectional", "matrix"]
+        optimized_approaches = ["bidirectional_parallel", "matrix_parallel"]
+        
+        comparison_results = self.compare_approaches(
+            task, subtasks, 
+            approaches_filter=original_approaches + optimized_approaches
+        )
+        
+        # 최적화 효과 분석
+        optimization_analysis = {}
+        
+        for original, optimized in zip(original_approaches, optimized_approaches):
+            if original in comparison_results and optimized in comparison_results:
+                orig_metrics = comparison_results[original]["metrics"]
+                opt_metrics = comparison_results[optimized]["metrics"]
+                
+                time_improvement = self._calculate_improvement(
+                    orig_metrics.get("build_time", 0),
+                    opt_metrics.get("build_time", 0)
+                )
+                
+                llm_efficiency = self._calculate_llm_efficiency(
+                    orig_metrics.get("total_llm_calls", 0),
+                    orig_metrics.get("build_time", 1),
+                    opt_metrics.get("total_llm_calls", 0),
+                    opt_metrics.get("build_time", 1)
+                )
+                
+                optimization_analysis[f"{original}_vs_{optimized}"] = {
+                    "time_improvement_percent": time_improvement,
+                    "llm_call_efficiency": llm_efficiency,
+                    "original_time": orig_metrics.get("build_time", 0),
+                    "optimized_time": opt_metrics.get("build_time", 0),
+                    "original_llm_calls": orig_metrics.get("total_llm_calls", 0),
+                    "optimized_llm_calls": opt_metrics.get("total_llm_calls", 0)
+                }
+        
+        comparison_results["optimization_analysis"] = optimization_analysis
+        self._print_optimization_summary(optimization_analysis)
+        
+        return comparison_results
+    
+    def _calculate_improvement(self, original: float, optimized: float) -> float:
+        """개선 비율 계산"""
+        if original <= 0:
+            return 0.0
+        return ((original - optimized) / original) * 100
+    
+    def _calculate_llm_efficiency(self, orig_calls: int, orig_time: float, 
+                                opt_calls: int, opt_time: float) -> Dict[str, float]:
+        """LLM 호출 효율성 계산"""
+        orig_rate = orig_calls / orig_time if orig_time > 0 else 0
+        opt_rate = opt_calls / opt_time if opt_time > 0 else 0
+        
+        return {
+            "original_calls_per_second": orig_rate,
+            "optimized_calls_per_second": opt_rate,
+            "efficiency_improvement": ((opt_rate - orig_rate) / orig_rate * 100) if orig_rate > 0 else 0
+        }
+    
+    def _print_optimization_summary(self, optimization_analysis: Dict[str, Any]):
+        """최적화 요약 출력"""
+        print("\n📊 OPTIMIZATION SUMMARY")
+        print("-" * 80)
+        
+        for comparison, data in optimization_analysis.items():
+            print(f"\n{comparison.upper().replace('_', ' → ')}:")
+            print(f"  ⏱️  Time improvement: {data['time_improvement_percent']:.1f}%")
+            print(f"      ({data['original_time']:.2f}s → {data['optimized_time']:.2f}s)")
+            
+            efficiency = data['llm_call_efficiency']
+            print(f"  🚀 LLM efficiency improvement: {efficiency['efficiency_improvement']:.1f}%")
+            print(f"      ({efficiency['original_calls_per_second']:.1f} → {efficiency['optimized_calls_per_second']:.1f} calls/sec)")
+            
+            print(f"  📞 LLM calls: {data['original_llm_calls']} → {data['optimized_llm_calls']}")
+        
+        print("-" * 80)
+    
     def evaluate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
         """Evaluate comparison results."""
         return self.evaluator.evaluate_comparison_results(results)
@@ -149,7 +265,7 @@ class DAGComparison:
         }
         
         for approach_name, result in results.items():
-            if approach_name == "comparison_summary":
+            if approach_name in ["comparison_summary", "evaluation_comparison", "optimization_analysis"]:
                 continue
             
             if result.get("success", False):
@@ -160,7 +276,8 @@ class DAGComparison:
                     "build_time": metrics["build_time"],
                     "total_llm_calls": metrics.get("total_llm_calls", 0),
                     "nodes": metrics["nodes"],
-                    "edges": metrics["edges"]
+                    "edges": metrics["edges"],
+                    "parallel_optimization": metrics.get("parallel_optimization", False)
                 }
                 
                 # Structural analysis
@@ -357,6 +474,12 @@ def compare_dag_approaches(task: str, subtasks: Optional[List[SubTask]] = None) 
     """Compare DAG building approaches."""
     framework = DAGComparison()
     return framework.compare_approaches(task, subtasks)
+
+
+def compare_optimization_impact(task: str, subtasks: Optional[List[SubTask]] = None) -> Dict[str, Any]:
+    """Compare optimization impact between original and parallel approaches."""
+    framework = DAGComparison()
+    return framework.compare_optimization_impact(task, subtasks)
 
 
 def save_comparison_results(results: Dict[str, Any], output_path: str):

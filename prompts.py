@@ -1,10 +1,4 @@
 # prompts.py - Centralized Prompt Management
-"""
-Centralized repository for all LLM prompts used in the dynamic workflow design system.
-This module consolidates all prompt templates from across the codebase to ensure consistency,
-maintainability, and easy modification of prompts.
-"""
-
 class WorkflowPrompts:
     """Core workflow planning prompts."""
     
@@ -259,6 +253,53 @@ Rules:
 - Return ONLY the JSON, no comments or other text
 """
 
+    ENHANCED_MATRIX_GENERATION = """
+Create a dependency adjacency matrix that MAXIMIZES PARALLEL EXECUTION for these subtasks.
+
+Original Task: {original_task}
+Subtasks:
+{subtask_list}
+
+CRITICAL OPTIMIZATION RULES:
+1. Independent data gathering tasks should run in PARALLEL (no dependencies)
+2. Only create dependencies when one task's OUTPUT is truly needed as INPUT for another
+3. Calculations using the same data can run in parallel UNLESS they build on each other
+4. Final aggregation/formatting tasks should depend on calculations, not data gathering
+5. Avoid creating unnecessary sequential chains - prefer parallel execution
+
+Analysis Framework:
+- PARALLEL: Tasks that can run simultaneously (different data sources, independent processing)
+- SEQUENTIAL: Tasks where one truly requires the other's output as input
+- CONVERGENT: Multiple parallel tasks feeding into a final aggregation step
+
+Return ONLY valid JSON in this exact format:
+{{
+  "matrix": [
+    [0, 1, 0],
+    [0, 0, 1], 
+    [0, 0, 0]
+  ],
+  "confidence_matrix": [
+    [0.0, 0.8, 0.0],
+    [0.0, 0.0, 0.9],
+    [0.0, 0.0, 0.0]
+  ],
+  "task_order": ["S1", "S2", "S3"],
+  "parallel_blocks": [
+    ["S1", "S2"],
+    ["S3"]
+  ]
+}}
+
+Where:
+- Matrix[i][j] = 1 means task i must complete before task j starts
+- Matrix diagonal must be all 0s  
+- confidence_matrix has same dimensions with values 0.0-1.0
+- task_order lists all subtask IDs in order
+- parallel_blocks groups tasks that can execute simultaneously
+- Return ONLY the JSON, no comments or other text
+"""
+
 
 class PromptManager:
     """Centralized prompt management with formatting methods."""
@@ -326,6 +367,13 @@ class PromptManager:
     def format_matrix_generation_prompt(original_task: str, subtask_list: str) -> str:
         """Format matrix generation prompt."""
         return ApproachSpecificPrompts.MATRIX_GENERATION.format(
+            original_task=original_task, subtask_list=subtask_list
+        )
+    
+    @staticmethod
+    def format_enhanced_matrix_generation_prompt(original_task: str, subtask_list: str) -> str:
+        """Format enhanced matrix generation prompt with parallel optimization."""
+        return ApproachSpecificPrompts.ENHANCED_MATRIX_GENERATION.format(
             original_task=original_task, subtask_list=subtask_list
         )
 

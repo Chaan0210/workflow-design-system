@@ -8,16 +8,6 @@ from prompts import PromptManager
 
 
 class HierarchicalApproach(DAGApproach):
-    """
-    Hierarchical DAG building approach.
-    
-    Uses hierarchical tree decomposition with cross-tree dependency analysis:
-    1. Organize existing subtasks into hierarchical tree structure
-    2. Add LLM-based cross-tree dependency analysis
-    3. Apply resource conflict checking
-    4. Resolve cycles by removing lowest confidence cross-tree edges
-    """
-    
     def __init__(self):
         super().__init__("hierarchical")
     
