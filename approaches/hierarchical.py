@@ -149,23 +149,68 @@ class HierarchicalApproach(DAGApproach):
         return cross_tree_calls
     
     def _get_tree_groups(self, dag: nx.DiGraph) -> Dict[str, List[str]]:
-        """Identify which subtasks belong to which tree groups."""
+        """Identify which subtasks belong to which tree groups based on hierarchical structure."""
+        import networkx as nx
+        
         groups = {}
         
-        for node in dag.nodes():
-            # Find all predecessors (parents) of this node
-            predecessors = list(dag.predecessors(node))
+        # Find all actual subtasks (nodes starting with 'S')
+        subtasks = [node for node in dag.nodes() if node.startswith('S')]
+        
+        # Find grouping nodes (nodes that are not subtasks and not ROOT)
+        group_nodes = [node for node in dag.nodes() 
+                      if not node.startswith('S') and node != 'ROOT']
+        
+        print(f"      Found subtasks: {subtasks}")
+        print(f"      Found group nodes: {group_nodes}")
+        
+        # For each group node, find its subtask descendants
+        for group_node in group_nodes:
+            group_subtasks = []
             
-            # If node has no predecessors or its predecessor is a grouping node, it's a group leader
-            if not predecessors:
-                continue
-                
-            parent = predecessors[0] if predecessors else None
-            if parent and not parent.startswith('S'):  # Grouping nodes don't start with 'S'
-                if parent not in groups:
-                    groups[parent] = []
-                groups[parent].append(node)
+            # Find all descendants of this group node that are subtasks
+            try:
+                descendants = nx.descendants(dag, group_node)
+                for desc in descendants:
+                    if desc.startswith('S'):
+                        group_subtasks.append(desc)
+                        
+                if group_subtasks:
+                    groups[group_node] = group_subtasks
+                    print(f"      Group '{group_node}': {group_subtasks}")
+                    
+            except Exception as e:
+                print(f"      Warning: Could not find descendants for {group_node}: {e}")
+        
+        # If no groups found with proper grouping nodes, try alternative approach
+        if not groups:
+            print(f"      No explicit group nodes found, analyzing tree structure...")
             
+            # Find subtasks by their parent nodes (direct predecessors)
+            for subtask in subtasks:
+                try:
+                    predecessors = list(dag.predecessors(subtask))
+                    if predecessors:
+                        parent = predecessors[0]  # Take first parent
+                        if parent != 'ROOT' and not parent.startswith('S'):
+                            # This parent is a group node
+                            if parent not in groups:
+                                groups[parent] = []
+                            if subtask not in groups[parent]:
+                                groups[parent].append(subtask)
+                        
+                except Exception as e:
+                    print(f"      Warning: Could not analyze parent for {subtask}: {e}")
+        
+        # Final fallback: if still no proper groups, create artificial groups for cross-analysis
+        if not groups:
+            print(f"      No hierarchical groups found, creating artificial groups for analysis")
+            all_subtasks = subtasks
+            if len(all_subtasks) >= 2:
+                mid = len(all_subtasks) // 2
+                groups["group_a"] = all_subtasks[:mid]
+                groups["group_b"] = all_subtasks[mid:]
+        
         return groups
     
     def _ask_cross_tree_dependency(self, task_a: SubTask, task_b: SubTask) -> Tuple[bool, float]:

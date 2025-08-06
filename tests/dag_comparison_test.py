@@ -97,8 +97,9 @@ def print_comparison_summary(results: dict, evaluation_report: dict = None):
     
     summary = results.get("comparison_summary", {})
     successful = summary.get("successful_approaches", [])
+    total_approaches = len([a for a in ["hierarchical", "bidirectional_parallel", "matrix_parallel"]])
     
-    print(f"Successful approaches: {len(successful)}/3")
+    print(f"Successful approaches: {len(successful)}/{total_approaches}")
     for approach in successful:
         print(f"✓ {approach.upper()}")
     

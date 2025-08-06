@@ -18,18 +18,22 @@ class DAGComparison:
     """Main DAG comparison framework with optimization support."""
     
     def __init__(self, include_parallel_approaches: bool = True):
-        # 기존 접근법들
+        # Only use parallel approaches for bidirectional and matrix, keep hierarchical as-is
         self.approaches = {
-            "bidirectional": BidirectionalApproach(),
             "hierarchical": HierarchicalApproach(),
-            "matrix": MatrixApproach()
         }
         
-        # 병렬 최적화 접근법들 추가
+        # Use only parallel versions of bidirectional and matrix
         if include_parallel_approaches:
             self.approaches.update({
                 "bidirectional_parallel": BidirectionalParallelApproach(),
                 "matrix_parallel": MatrixParallelApproach()
+            })
+        else:
+            # Fallback to original approaches if parallel is disabled
+            self.approaches.update({
+                "bidirectional": BidirectionalApproach(),
+                "matrix": MatrixApproach()
             })
         
         self.evaluator = ComparisonEvaluator()
@@ -167,7 +171,17 @@ class DAGComparison:
         print("\n🔬 OPTIMIZATION IMPACT ANALYSIS")
         print("="*80)
         
-        # 원본 vs 최적화 버전 비교
+        # Note: This method now compares current parallel approaches with legacy versions
+        # Create temporary instances for comparison
+        legacy_approaches = {
+            "bidirectional": BidirectionalApproach(),
+            "matrix": MatrixApproach()
+        }
+        
+        # Temporarily add legacy approaches for comparison
+        original_approaches_dict = self.approaches.copy()
+        self.approaches.update(legacy_approaches)
+        
         original_approaches = ["bidirectional", "matrix"]
         optimized_approaches = ["bidirectional_parallel", "matrix_parallel"]
         
@@ -175,6 +189,9 @@ class DAGComparison:
             task, subtasks, 
             approaches_filter=original_approaches + optimized_approaches
         )
+        
+        # Restore original approaches
+        self.approaches = original_approaches_dict
         
         # 최적화 효과 분석
         optimization_analysis = {}
@@ -471,7 +488,7 @@ class DAGComparison:
 
 # Convenience functions for backward compatibility
 def compare_dag_approaches(task: str, subtasks: Optional[List[SubTask]] = None) -> Dict[str, Any]:
-    """Compare DAG building approaches."""
+    """Compare DAG building approaches (now uses parallel versions by default)."""
     framework = DAGComparison()
     return framework.compare_approaches(task, subtasks)
 

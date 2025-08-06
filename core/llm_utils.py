@@ -54,8 +54,8 @@ class LLMClient:
         )
     
     async def batch_dependency_analysis(self, dependency_pairs: List[Tuple], original_task: str = "", 
-                                      batch_size: int = 10) -> Dict[Tuple, Tuple[bool, float]]:
-        """병렬 의존성 분석 배치 처리"""
+                                      batch_size: int = 10) -> Dict[Tuple[str, str], Tuple[bool, float]]:
+        """병렬 의존성 분석 배치 처리 - Returns dict with (id_a, id_b) string tuples as keys"""
         results = {}
         
         # 배치 단위로 작업 분할
@@ -74,14 +74,16 @@ class LLMClient:
             # 병렬 실행
             batch_results = await asyncio.gather(*tasks, return_exceptions=True)
             
-            # 결과 수집
+            # 결과 수집 - Use string ID tuples as keys for hashability
             for j, result in enumerate(batch_results):
-                pair = batch[j]
+                task_a, task_b = batch[j]
+                pair_key = (task_a.id, task_b.id)  # Use string IDs as hashable keys
+                
                 if isinstance(result, Exception):
-                    print(f"      ❌ Failed dependency check for {pair[0].id} → {pair[1].id}: {result}")
-                    results[pair] = (False, 0.3)  # 폴백값
+                    print(f"      ❌ Failed dependency check for {task_a.id} → {task_b.id}: {result}")
+                    results[pair_key] = (False, 0.3)  # 폴백값
                 else:
-                    results[pair] = result
+                    results[pair_key] = result
         
         return results
     

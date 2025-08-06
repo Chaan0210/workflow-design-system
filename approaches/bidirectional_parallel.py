@@ -33,8 +33,10 @@ class BidirectionalParallelApproach(DAGApproach):
         
         # 의존성 쌍 생성 (bidirectional)
         dependency_pairs = []
+        subtask_map = {st.id: st for st in subtasks}  # ID로 SubTask 조회를 위한 맵
+        
         for a, b in itertools.combinations(subtasks, 2):
-            dependency_pairs.append((a, b))  # A -> B
+            dependency_pairs.append((a, b))  # A -> B (SubTask objects for LLM analysis)
             dependency_pairs.append((b, a))  # B -> A
         
         n_pairs = len(dependency_pairs)
@@ -56,17 +58,18 @@ class BidirectionalParallelApproach(DAGApproach):
         low_conf_candidates = []
         resource_calls = 0
         
-        for (task_a, task_b), (dependent, confidence) in dependency_results.items():
+        # Process dependency results (now keyed by string ID tuples)
+        for (task_a_id, task_b_id), (dependent, confidence) in dependency_results.items():
             if dependent and confidence >= self.CUTOFF_THRESHOLD:
                 # 높은 신뢰도 의존성 추가
-                if not dag.has_edge(task_b.id, task_a.id):  # 역방향 충돌 확인
-                    dag.add_edge(task_a.id, task_b.id, confidence=confidence, 
+                if not dag.has_edge(task_b_id, task_a_id):  # 역방향 충돌 확인
+                    dag.add_edge(task_a_id, task_b_id, confidence=confidence, 
                                has_resource_conflict=False, shared_resources=[])
-                    edge_conf_map[(task_a.id, task_b.id)] = confidence
+                    edge_conf_map[(task_a_id, task_b_id)] = confidence
                     resource_calls += 1
             elif dependent and confidence >= self.LOW_CONF_THRESHOLD:
                 # 낮은 신뢰도 후보
-                low_conf_candidates.append((task_a.id, task_b.id, confidence))
+                low_conf_candidates.append((task_a_id, task_b_id, confidence))
         
         # 낮은 신뢰도 엣지 추가 (충돌 없는 경우만)
         for u, v, c in sorted(low_conf_candidates, key=lambda x: -x[2]):

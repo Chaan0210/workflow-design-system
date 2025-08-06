@@ -1,304 +1,328 @@
-# prompts.py - Centralized Prompt Management
-class WorkflowPrompts:
-    """Core workflow planning prompts."""
-    
-    DECOMPOSITION = """
-You are an intelligent workflow planner. Your first step is to decompose the given task into a set of necessary, self-contained sub-tasks that a team of autonomous agents could handle.
-Focus only on identifying and listing the sub-tasks. The dependency analysis and agent assignment will be handled in a later step.
+# prompts.py — v2 (2025‑08‑06)
+#
+# Centralized prompt templates tuned for *structured‑output reliability* and
+# *planning‑quality*, informed by recent research:
+#   • Schema‑based prompting (SchemaBench, 2025)
+#   • Few‑shot / instruction synergy (Schick et al., 2022; Shelf.io blog, 2024)
+#   • Constrained JSON generation guides (OpenAI Structured Outputs, 2025)
+#
+# Key improvements vs v1:
+# 1. Single‑source of truth for JSON schema → every prompt embeds the exact
+#    JSON skeleton the model must return; no prose allowed.
+# 2. Strict delimiters using ```json / ``` to reduce hallucinated text.
+# 3. Step‑back thinking ("Analyse step‑by‑step **internally**, do **not**
+#    expose chain‑of‑thought") to encourage reasoning without leaking.
+# 4. Few‑shot anchors (1 example per complex prompt) to ground the format.
+# 5. Parallel‑aware guidelines in matrix generation prompt emphasise
+#    independence detection heuristics.
 
+from __future__ import annotations
+
+class WorkflowPrompts:
+    """Core workflow planning prompts (decomposition, mode tagging, etc.)."""
+
+    DECOMPOSITION = (
+        """\
+### SYSTEM
+You are *PlanGPT*, an expert workflow architect.
+Think carefully, de‑duplicate similar steps, and ensure coverage of the main
+objective. **DO NOT** perform dependency analysis here.
+Respond with **ONLY** valid JSON — no surrounding prose.
+
+```json schema
+[
+  {{"id": "S1", "desc": "<string>"}},
+  {{"id": "S2", "desc": "<string>"}}
+]
+```
+
+### USER
 Task Requirements:
 {task}
 
-Return a JSON list of objects, where each object has an "id" and a "desc" field. For example:
+### EXAMPLE (few‑shot)
+Input: "Plan a weekend city break in Paris for two"
+Output:
+```json
 [
-  {{ "id": "S1", "desc": "Description of the first sub-task." }},
-  {{ "id": "S2", "desc": "Description of the second sub-task." }}
+  {{"id": "S1", "desc": "Book return train/flight tickets"}},
+  {{"id": "S2", "desc": "Reserve central accommodation"}},
+  {{"id": "S3", "desc": "Draft 2‑day sightseeing itinerary"}},
+  {{"id": "S4", "desc": "Purchase museum passes"}}
 ]
+```
+
+### NOW COMPLETE THE TASK ABOVE
 """
+    )
 
-    MODE_CLASSIFICATION = """
-Analyze the following sub-task and determine its primary nature:
+    MODE_CLASSIFICATION = (
+        """\
+### SYSTEM
+Classify the cognitive *mode* of the following sub‑task.
+Internal reasoning is allowed, but **only** the final JSON must be output.
+Follow the schema strictly.
 
-Task: "{description}"
-Context: This is part of a larger workflow for: "{main_task}"
-
-Consider:
-1. Does this task primarily require gathering diverse external information? (WIDE)
-2. Does this task primarily require deep reasoning/analysis of limited information? (DEEP)  
-3. What is the information processing pattern?
-
-Return JSON with:
+```json schema
 {{
-    "primary_mode": "WIDE" or "DEEP",
-    "confidence": 0.0-1.0,
-    "reasoning": "brief explanation",
-    "is_hybrid": true/false,
-    "secondary_mode": "WIDE"/"DEEP"/null,
-    "information_requirements": ["requirement1", "requirement2", ...],
-    "processing_complexity": "low"/"medium"/"high"
+  "primary_mode": "WIDE" | "DEEP",
+  "confidence": 0.0‑1.0,
+  "reasoning": "<max 200 chars>",
+  "is_hybrid": true | false,
+  "secondary_mode": "WIDE" | "DEEP" | null,
+  "information_requirements": ["<string>", …],
+  "processing_complexity": "low" | "medium" | "high"
 }}
-"""
+```
 
-    COMPLEXITY_ANALYSIS = """
-Analyze the complexity and uncertainty of this task:
-
-Task: "{task}"
-Sub-tasks: {subtasks}
-
-Rate each factor from 1-10:
-1. Domain complexity (specialized knowledge required)
-2. Coordination complexity (inter-task dependencies)  
-3. Computational complexity (processing requirements)
-4. Temporal uncertainty (unpredictable timing)
-5. Resource uncertainty (variable resource needs)
-6. Outcome uncertainty (unpredictable results)
-
-Return JSON with:
-{{
-    "domain_complexity": 1-10,
-    "coordination_complexity": 1-10, 
-    "computational_complexity": 1-10,
-    "temporal_uncertainty": 1-10,
-    "resource_uncertainty": 1-10,
-    "outcome_uncertainty": 1-10,
-    "overall_uncertainty": 0.0-1.0,
-    "requires_replanning": true/false,
-    "risk_factors": ["factor1", "factor2", ...],
-    "mitigation_strategies": ["strategy1", "strategy2", ...]
-}}
-"""
-
-    QUALITY_VALIDATION = """
-Evaluate the quality of this workflow design:
-
+### USER
 Main Task: "{main_task}"
-Sub-tasks: {subtasks}
-Dependencies: {dependencies}
-
-Rate each aspect from 0.0 to 1.0:
-1. Completeness: Do the sub-tasks fully cover the main task?
-2. Coherence: Are the dependencies logical and well-structured?
-3. Efficiency: Is the workflow well-organized for execution?
-4. Feasibility: Are all sub-tasks realistic and achievable?
-
-Return JSON with:
-{{
-    "completeness_score": 0.0-1.0,
-    "coherence_score": 0.0-1.0,
-    "efficiency_score": 0.0-1.0,
-    "feasibility_score": 0.0-1.0,
-    "validation_errors": ["error1", "error2", ...],
-    "warnings": ["warning1", "warning2", ...],
-    "suggestions": ["suggestion1", "suggestion2", ...],
-    "missing_subtasks": ["missing1", "missing2", ...],
-    "redundant_subtasks": ["redundant1", "redundant2", ...],
-    "problematic_dependencies": ["dep1", "dep2", ...]
-}}
+Sub‑Task: "{description}"
 """
+    )
+
+    COMPLEXITY_ANALYSIS = (
+        """\
+### SYSTEM
+Estimate complexity / uncertainty factors for the task bundle. Think rigorously,
+but output **only** JSON adhering to the schema.
+
+```json schema
+{{
+  "domain_complexity": 1‑10,
+  "coordination_complexity": 1‑10,
+  "computational_complexity": 1‑10,
+  "temporal_uncertainty": 1‑10,
+  "resource_uncertainty": 1‑10,
+  "outcome_uncertainty": 1‑10,
+  "overall_uncertainty": 0.0‑1.0,
+  "requires_replanning": true | false,
+  "risk_factors": ["<string>", …],
+  "mitigation_strategies": ["<string>", …]
+}}
+```
+
+### USER
+Main Task: "{task}"
+Sub‑Tasks JSON: {subtasks}
+"""
+    )
+
+    QUALITY_VALIDATION = (
+        """\
+### SYSTEM
+Critique the workflow design on four axes. Produce scores and diagnostics in the
+JSON schema below.
+
+```json schema
+{{
+  "completeness_score": 0.0‑1.0,
+  "coherence_score": 0.0‑1.0,
+  "efficiency_score": 0.0‑1.0,
+  "feasibility_score": 0.0‑1.0,
+  "validation_errors": ["<string>", …],
+  "warnings": ["<string>", …],
+  "suggestions": ["<string>", …],
+  "missing_subtasks": ["<string>", …],
+  "redundant_subtasks": ["<string>", …],
+  "problematic_dependencies": ["<string>", …]
+}}
+```
+
+### USER
+Main Task: "{main_task}"
+Sub‑Tasks JSON: {subtasks}
+Dependencies: {dependencies}
+"""
+    )
 
 
 class DependencyPrompts:
-    """Prompts for dependency and resource analysis."""
-    
-    DEPENDENCY_ANALYSIS = """
-You MUST answer in **valid JSON** only, matching this schema exactly:
+    """Prompts for pair‑wise dependency and resource analysis."""
 
+    DEPENDENCY_ANALYSIS = (
+        """\
+### SYSTEM
+Determine if B depends on A. Return JSON only.
+
+```json schema
 {{
-  "dependent": true/false,     // true if B CANNOT start before A finishes
-  "confidence": 0.0-1.0,       // numeric
-  "reason": "short reason"     // <= 200 chars
+  "dependent": true | false,
+  "confidence": 0.0‑1.0,
+  "reason": "<max 120 chars>"
 }}
+```
 
-Definition: B depends on A if B cannot start before A finishes.
-
+### USER
 Original Task Context: "{original_task}"
-
 A: "{a}"
 B: "{b}"
 """
+    )
 
-    RESOURCE_CONFLICT = """
-You MUST answer in **valid JSON** only, matching this schema exactly:
+    RESOURCE_CONFLICT = (
+        """\
+### SYSTEM
+Detect concrete *resource* conflicts between tasks A & B.
 
+```json schema
 {{
-  "resource_conflict": true/false,
-  "shared_resources": ["..."]
+  "resource_conflict": true | false,
+  "shared_resources": ["<string>", …]
 }}
+```
 
+### USER
 Original Task Context: "{original_task}"
-
 A: "{a}"
 B: "{b}"
 """
+    )
 
-    CROSS_TREE_DEPENDENCY = """
-Analyze the dependency relationship between these two subtasks from different workflow groups:
+    CROSS_TREE_DEPENDENCY = (
+        """\
+### SYSTEM
+Two subtasks belong to different branches. Decide if A must finish before B.
+Return JSON only.
 
+```json schema
+{{"dependent": true | false, "confidence": 0.0‑1.0, "reasoning": "<120 chars>"}}
+```
+
+### USER
 Task A: {task_a_desc}
 Task B: {task_b_desc}
-
-Does Task A need to complete before Task B can start? Consider:
-- Information flow and data dependencies
-- Logical sequence requirements
-- Resource access needs
-
-Return JSON:
-{{
-    "dependent": true/false,
-    "confidence": 0.0-1.0,
-    "reasoning": "brief explanation"
-}}
 """
+    )
 
-    RESOURCE_CONFLICT_ANALYSIS = """
-Analyze potential resource conflicts between these two subtasks:
+    RESOURCE_CONFLICT_ANALYSIS = (
+        """\
+### SYSTEM
+Identify overlapping resources.
 
+```json schema
+{{
+  "has_conflict": true | false,
+  "shared_resources": ["<string>", …],
+  "conflict_severity": "low" | "medium" | "high"
+}}
+```
+
+### USER
 Task A: {task_a_desc}
 Task B: {task_b_desc}
-
-Do these tasks compete for the same resources? Consider:
-- Data sources (websites, databases, APIs)
-- Computational resources
-- External services
-- Human attention/expertise
-
-Return JSON:
-{{
-    "has_conflict": true/false,
-    "shared_resources": ["list of shared resource names"],
-    "conflict_severity": "low/medium/high"
-}}
 """
+    )
 
 
 class ApproachSpecificPrompts:
-    """Approach-specific prompts for different DAG building methods."""
-    
-    HIERARCHICAL_ORGANIZATION = """
-You are an intelligent workflow planner. Organize the given subtasks into a hierarchical tree structure.
+    """Prompts tailored to particular DAG‑building strategies."""
 
-Original Task: {task}
+    HIERARCHICAL_ORGANIZATION = (
+        """\
+### SYSTEM
+Group the existing subtasks into a logical tree. **Do not** invent new IDs.
+Output JSON that matches the schema; no extra commentary.
 
-Existing Subtasks:
-{subtask_list}
-
-Organize these existing subtasks into a hierarchical tree where:
-- ROOT is the main task
-- Group related subtasks under logical parent categories
-- Use ONLY the existing subtask IDs (S1, S2, S3, etc.)
-- Each subtask must appear exactly once in the tree
-
-Return ONLY a JSON tree structure where each node has:
-- "id": task identifier (use ROOT for top level, then existing subtask IDs)
-- "desc": task description
-- "children": list of child task IDs (empty array [] for leaf nodes)
-
-Example format:
+```json schema
 {{
   "id": "ROOT",
-  "desc": "Calculate marathon distance to moon",
+  "desc": "<string>",
   "children": [
     {{
-      "id": "research_group",
-      "desc": "Data gathering phase",
+      "id": "<group_name_or_subtask_id>",
+      "desc": "<string>", 
       "children": [
-        {{"id": "S1", "desc": "Get marathon pace", "children": []}},
-        {{"id": "S2", "desc": "Get moon distance", "children": []}}
-      ]
-    }},
-    {{
-      "id": "calculation_group", 
-      "desc": "Calculation phase",
-      "children": [
-        {{"id": "S3", "desc": "Convert units", "children": []}},
-        {{"id": "S4", "desc": "Calculate time", "children": []}},
-        {{"id": "S5", "desc": "Convert to hours", "children": []}},
-        {{"id": "S6", "desc": "Round result", "children": []}}
+        {{"id": "S1", "desc": "<string>", "children": []}},
+        {{"id": "S2", "desc": "<string>", "children": []}}
       ]
     }}
   ]
 }}
+```
 
-Return ONLY the JSON structure, no other text.
-"""
-
-    MATRIX_GENERATION = """
-Create a dependency adjacency matrix for these subtasks.
-
-Original Task: {original_task}
-
-Subtasks:
-{subtask_list}
-
-Return ONLY valid JSON in this exact format:
+### EXAMPLE
+Input subtasks: S1: Find pace, S2: Find distance, S3: Calculate time
+Output:
+```json
 {{
-  "matrix": [
-    [0, 1, 0],
-    [0, 0, 1],
-    [0, 0, 0]
-  ],
-  "confidence_matrix": [
-    [0.0, 0.8, 0.0],
-    [0.0, 0.0, 0.9],
-    [0.0, 0.0, 0.0]
-  ],
-  "task_order": ["S1", "S2", "S3"]
-}}
-
-Rules:
-- Matrix[i][j] = 1 means task i must complete before task j starts
-- Matrix diagonal must be all 0s
-- confidence_matrix has same dimensions with values 0.0-1.0
-- task_order lists all subtask IDs in order
-- Return ONLY the JSON, no comments or other text
-"""
-
-    ENHANCED_MATRIX_GENERATION = """
-Create a dependency adjacency matrix that MAXIMIZES PARALLEL EXECUTION for these subtasks.
-
-Original Task: {original_task}
-Subtasks:
-{subtask_list}
-
-CRITICAL OPTIMIZATION RULES:
-1. Independent data gathering tasks should run in PARALLEL (no dependencies)
-2. Only create dependencies when one task's OUTPUT is truly needed as INPUT for another
-3. Calculations using the same data can run in parallel UNLESS they build on each other
-4. Final aggregation/formatting tasks should depend on calculations, not data gathering
-5. Avoid creating unnecessary sequential chains - prefer parallel execution
-
-Analysis Framework:
-- PARALLEL: Tasks that can run simultaneously (different data sources, independent processing)
-- SEQUENTIAL: Tasks where one truly requires the other's output as input
-- CONVERGENT: Multiple parallel tasks feeding into a final aggregation step
-
-Return ONLY valid JSON in this exact format:
-{{
-  "matrix": [
-    [0, 1, 0],
-    [0, 0, 1], 
-    [0, 0, 0]
-  ],
-  "confidence_matrix": [
-    [0.0, 0.8, 0.0],
-    [0.0, 0.0, 0.9],
-    [0.0, 0.0, 0.0]
-  ],
-  "task_order": ["S1", "S2", "S3"],
-  "parallel_blocks": [
-    ["S1", "S2"],
-    ["S3"]
+  "id": "ROOT",
+  "desc": "Calculate running time",
+  "children": [
+    {{
+      "id": "data_gathering",
+      "desc": "Gather required data",
+      "children": [
+        {{"id": "S1", "desc": "Find pace", "children": []}},
+        {{"id": "S2", "desc": "Find distance", "children": []}}
+      ]
+    }},
+    {{
+      "id": "S3", 
+      "desc": "Calculate time",
+      "children": []
+    }}
   ]
 }}
+```
 
-Where:
-- Matrix[i][j] = 1 means task i must complete before task j starts
-- Matrix diagonal must be all 0s  
-- confidence_matrix has same dimensions with values 0.0-1.0
-- task_order lists all subtask IDs in order
-- parallel_blocks groups tasks that can execute simultaneously
-- Return ONLY the JSON, no comments or other text
+### USER
+Original Task: {task}
+Existing Subtasks:
+{subtask_list}
 """
+    )
+
+    MATRIX_GENERATION = (
+        """\
+### SYSTEM
+Create a full adjacency matrix of strict dependencies. Think about data flow,
+resource usage, and logical order, but output only JSON.
+
+```json schema
+{{
+  "matrix": [[0|1, …]],
+  "confidence_matrix": [[0.0‑1.0, …]],
+  "task_order": ["<SubtaskID>", …]
+}}
+```
+
+### USER
+Original Task: {original_task}
+Subtasks:
+{subtask_list}
+"""
+    )
+
+    ENHANCED_MATRIX_GENERATION = (
+        """\
+### SYSTEM
+Generate a dependency matrix that *maximises parallel execution* while
+maintaining correctness. Follow the five optimisation rules below FIRST, then
+return JSON only.
+
+```json schema
+{{
+  "matrix": [[0|1, …]],
+  "confidence_matrix": [[0.0‑1.0, …]],
+  "task_order": ["<SubtaskID>", …],
+  "parallel_blocks": [["<SubtaskID>", …], …]
+}}
+```
+
+### OPTIMISATION RULES
+1. Independent information‑gathering tasks → **no** dependencies.
+2. Only impose an edge if *output‑to‑input* is mandatory.
+3. Calculations that share inputs run in parallel.
+4. Final aggregation / formatting depends on all calculation tasks.
+5. Prefer fan‑in over deep chains.
+
+### USER
+Original Task: {original_task}
+Subtasks:
+{subtask_list}
+"""
+    )
 
 
 class PromptManager:
