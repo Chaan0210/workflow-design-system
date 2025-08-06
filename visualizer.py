@@ -35,15 +35,19 @@ def create_visualization(workflow: Workflow, complexity_metrics: ComplexityMetri
         # Base color by mode
         if st.mode == "WIDE":
             base_color = "skyblue"
-        else:
+        elif st.mode == "DEEP":
             base_color = "lightgreen"
+        else:  # Handle None or unknown modes
+            base_color = "lightcoral"
         
         # Modify color based on critical path
         if workflow.dag.nodes[node].get('on_critical_path', False):
             if st.mode == "WIDE":
                 base_color = "dodgerblue"
-            else:
+            elif st.mode == "DEEP":
                 base_color = "green"
+            else:  # Handle None or unknown modes
+                base_color = "darkred"
         
         node_colors.append(base_color)
         
@@ -92,8 +96,10 @@ def create_visualization(workflow: Workflow, complexity_metrics: ComplexityMetri
     legend_elements = [
         Patch(facecolor="skyblue", edgecolor="black", label="WIDE Search"),
         Patch(facecolor="lightgreen", edgecolor="black", label="DEEP Reasoning"),
+        Patch(facecolor="lightcoral", edgecolor="black", label="Unknown Mode"),
         Patch(facecolor="dodgerblue", edgecolor="black", label="WIDE (Critical Path)"),
         Patch(facecolor="green", edgecolor="black", label="DEEP (Critical Path)"),
+        Patch(facecolor="darkred", edgecolor="black", label="Unknown (Critical Path)"),
         plt.Line2D([0], [0], color='darkgreen', lw=2, label='High Confidence Dependency'),
         plt.Line2D([0], [0], color='orange', lw=1.5, label='Low Confidence Dependency'),
         plt.Line2D([0], [0], color='red', lw=3, label='Resource Conflict')
@@ -170,19 +176,40 @@ def create_visualization(workflow: Workflow, complexity_metrics: ComplexityMetri
     # Create task summary table
     table_data = []
     for st in workflow.subtasks:
-        node_data = workflow.dag.nodes[st.id]
-        parallel_level = node_data.get('parallel_level', 'N/A')
-        on_critical = '✓' if node_data.get('on_critical_path', False) else ''
-        peer_count = len(node_data.get('parallel_peers', []))
-        
-        table_data.append([
-            st.id,
-            st.mode,
-            f"Level {parallel_level}" if parallel_level != 'N/A' else 'N/A',
-            on_critical,
-            peer_count,
-            st.description[:50] + "..." if len(st.description) > 50 else st.description
-        ])
+        # Only include subtasks that actually exist in the DAG
+        if st.id in workflow.dag.nodes:
+            node_data = workflow.dag.nodes[st.id]
+            parallel_level = node_data.get('parallel_level', 'N/A')
+            on_critical = '✓' if node_data.get('on_critical_path', False) else ''
+            peer_count = len(node_data.get('parallel_peers', []))
+            
+            table_data.append([
+                st.id,
+                st.mode or "Unknown",
+                f"Level {parallel_level}" if parallel_level != 'N/A' else 'N/A',
+                on_critical,
+                peer_count,
+                st.description[:50] + "..." if len(st.description) > 50 else st.description
+            ])
+    
+    # Also add any DAG nodes that aren't in the subtasks list (for hierarchical approaches)
+    for node_id in workflow.dag.nodes():
+        if not any(st.id == node_id for st in workflow.subtasks):
+            node_data = workflow.dag.nodes[node_id]
+            st = node_data.get('obj')
+            if st:
+                parallel_level = node_data.get('parallel_level', 'N/A')
+                on_critical = '✓' if node_data.get('on_critical_path', False) else ''
+                peer_count = len(node_data.get('parallel_peers', []))
+                
+                table_data.append([
+                    st.id,
+                    st.mode or "Unknown",
+                    f"Level {parallel_level}" if parallel_level != 'N/A' else 'N/A',
+                    on_critical,
+                    peer_count,
+                    st.description[:50] + "..." if len(st.description) > 50 else st.description
+                ])
     
     table_headers = ['Task ID', 'Mode', 'Parallel Level', 'Critical', 'Peers', 'Description']
     
@@ -217,6 +244,7 @@ Original Task: {workflow.original_prompt}
 Total Sub-tasks: {len(workflow.subtasks)}
 - WIDE tasks: {len([st for st in workflow.subtasks if st.mode == "WIDE"])}
 - DEEP tasks: {len([st for st in workflow.subtasks if st.mode == "DEEP"])}
+- Unknown mode tasks: {len([st for st in workflow.subtasks if st.mode not in ["WIDE", "DEEP"]])}
 
 Dependencies: {workflow.dag.number_of_edges()}
 Parallel Levels: {len(set(workflow.dag.nodes[n].get('parallel_level', 0) for n in workflow.dag.nodes()))}

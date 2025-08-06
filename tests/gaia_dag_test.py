@@ -3,121 +3,117 @@ import os
 import sys
 import pathlib
 import itertools
-import datetime
 from dotenv import load_dotenv
-import json
-import networkx as nx
 
-# Add project root to sys.path to allow for module imports
+# Add project root to sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from utils import load_gaia, save_json
-from decomposition import decompose
-from dag_builder import build_dag
+from utils import load_gaia
+from workflow_engine import WorkflowEngine
 from visualizer import create_visualization
-from models import Workflow, ComplexityMetrics, WorkflowQualityMetrics, ExecutionEstimate
+from core import JsonSerializer
 
-def dump_dag_snapshot(dag: nx.DiGraph, outpath):
-    data = {
-        "nodes": [
-            {
-                "id": n,
-                **{k: v for k, v in dag.nodes[n].items() if k != "obj"}
-            }
-            for n in dag.nodes()
-        ],
-        "edges": [
-            {
-                "u": u,
-                "v": v,
-                **d
-            }
-            for u, v, d in dag.edges(data=True)
-        ]
-    }
-    with open(outpath, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-def simple_consistency_checks(dag: nx.DiGraph, subtasks_len: int):
-    assert dag.number_of_nodes() == subtasks_len, "Node count mismatch"
-    assert nx.is_directed_acyclic_graph(dag), "Graph must be a DAG"
-    topo = list(nx.topological_sort(dag))
-    assert len(topo) == dag.number_of_nodes(), "Topological sort must cover all nodes"
-    for u, v in dag.edges():
-        assert u in dag.nodes and v in dag.nodes, "Edge endpoint missing"
 
 def main():
-    # Load environment variables from .env file
+    """Test workflow engine with GAIA dataset"""
+    
+    # Load environment
     dotenv_path = pathlib.Path(__file__).parent.parent / '.env'
     if not dotenv_path.exists():
-        sys.exit(f"❗ .env file not found at {dotenv_path}. Please create it and add your OPENAI_API_KEY.")
+        sys.exit(f"❗ .env file not found at {dotenv_path}")
     load_dotenv(dotenv_path=dotenv_path)
-
+    
     if not os.getenv("OPENAI_API_KEY"):
-        sys.exit("❗ OPENAI_API_KEY not found in .env file or environment variables.")
-
-    # Output directory should be in the project root, not the test directory
+        sys.exit("❗ OPENAI_API_KEY not found")
+    
+    # Setup output directory
     outdir = pathlib.Path(__file__).parent.parent / "workflow_outputs"
     outdir.mkdir(exist_ok=True)
-
-    # Load the first task from the GAIA dataset
-    task_id, prompt = next(itertools.islice(load_gaia(), 1))
-
-    print(f"Processing task: {task_id}")
-    print(f"Prompt: {prompt}")
-
-    # 1. Decompose the task into subtasks
-    subtasks = decompose(prompt)
-    print(f"Decomposed into {len(subtasks)} subtasks.")
-
-    # 2. Build the DAG
-    dag = build_dag(subtasks)
-    print(f"DAG built with {dag.number_of_nodes()} nodes and {dag.number_of_edges()} edges.")
-
-    # Create a dummy workflow object for visualization
-    workflow = Workflow(
-        task_id=task_id,
-        original_prompt=prompt,
-        subtasks=subtasks,
-        dag=dag,
-    )
     
-    # Create dummy metrics for visualization
-    complexity_metrics = ComplexityMetrics(
-        base_score=10.0,
-        uncertainty_score=0.5,
-        domain_complexity=5,
-        coordination_complexity=5,
-        computational_complexity=5,
-        temporal_uncertainty=5,
-        resource_uncertainty=5,
-        outcome_uncertainty=5,
-        critical_path_factor=0.8,
-        parallel_efficiency=0.6,
-        mode_heterogeneity=0.5,
-        resource_conflict_factor=0.2,
-        requires_replanning=False,
-    )
-    quality_metrics = WorkflowQualityMetrics(
-        completeness_score=0.9,
-        coherence_score=0.85,
-        efficiency_score=0.7,
-        feasibility_score=0.95,
-        overall_quality=0.85,
-    )
-    execution_estimate = ExecutionEstimate(
-        estimated_total_time=5.0,
-        critical_path_time=3.0,
-        parallel_time_savings=2.0,
-        resource_requirements={"cpu_cores": 4, "memory_gb": 8},
-        cost_estimate={"compute": 1.0, "storage": 0.2, "network": 0.1},
-    )
+    # Load test task
+    task_id, prompt = next(itertools.islice(load_gaia(), 1))
+    print(f"🧪 Testing GAIA DAG generation")
+    print(f"Task ID: {task_id}")
+    print(f"Prompt: {prompt}")
+    print("-" * 80)
+    
+    # Create workflow engine
+    engine = WorkflowEngine()
+    
+    try:
+        # Plan workflow
+        print("🔍 Planning workflow...")
+        workflow, complexity_metrics, quality_metrics, execution_estimate, issues = engine.plan_workflow(task_id, prompt)
+        
+        print(f"✅ Workflow planning completed!")
+        print(f"   Sub-tasks: {len(workflow.subtasks)}")
+        print(f"   Dependencies: {workflow.dag.number_of_edges()}")
+        print(f"   Quality Score: {quality_metrics.overall_quality:.3f}")
+        print(f"   Complexity: {complexity_metrics.base_score:.2f}")
+        print(f"   Estimated Time: {execution_estimate.estimated_total_time:.1f}h")
+        
+        # Save results
+        output_path = outdir / f"gaia_dag_test_{task_id}.json"
+        JsonSerializer.save_json(workflow.report, str(output_path))
+        print(f"📊 Results saved: {output_path}")
+        
+        # Create visualization
+        viz_path = outdir / f"gaia_dag_test_{task_id}.png"
+        try:
+            create_visualization(workflow, complexity_metrics, quality_metrics, execution_estimate, viz_path)
+            print(f"📈 Visualization saved: {viz_path}")
+        except Exception as e:
+            print(f"❌ Visualization failed: {e}")
+        
+        # Print summary
+        print("\n" + "="*80)
+        print("WORKFLOW SUMMARY")
+        print("="*80)
+        
+        print(f"Task ID: {workflow.task_id}")
+        print(f"Quality: {quality_metrics.overall_quality:.3f}/1.0")
+        print(f"Complexity: {complexity_metrics.base_score:.2f}")
+        print(f"Uncertainty: {complexity_metrics.uncertainty_score:.3f}")
+        print(f"Parallel Efficiency: {complexity_metrics.parallel_efficiency:.3f}")
+        print(f"Estimated Time: {execution_estimate.estimated_total_time:.1f}h")
+        print(f"Time Savings: {execution_estimate.parallel_time_savings:.1f}h")
+        
+        if complexity_metrics.requires_replanning:
+            print("⚠️ Re-planning recommended")
+        
+        # Print sub-tasks
+        print(f"\nSub-tasks ({len(workflow.subtasks)}):")
+        for st in workflow.subtasks:
+            print(f"  {st.id} ({st.mode}): {st.description}")
+        
+        # Print dependencies
+        if workflow.dag.number_of_edges() > 0:
+            print(f"\nDependencies ({workflow.dag.number_of_edges()}):")
+            for u, v in workflow.dag.edges():
+                conf = workflow.dag[u][v].get('confidence', 'N/A')
+                print(f"  {u} → {v} (confidence: {conf})")
+        
+        # Print issues if any
+        critical_issues = issues.get('critical_issues', [])
+        if critical_issues:
+            print(f"\n⚠️ Critical Issues:")
+            for issue in critical_issues:
+                print(f"  - {issue}")
+        
+        recommendations = issues.get('recommendations', [])
+        if recommendations:
+            print(f"\n💡 Recommendations:")
+            for rec in recommendations:
+                print(f"  - {rec}")
+        
+        print("\n✅ Test completed successfully!")
+        
+    except Exception as e:
+        print(f"❌ Test failed: {str(e)}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
+        sys.exit(1)
 
-    # 3. Visualize the DAG
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = outdir / f"gaia_dag_test_{timestamp}.png"
-    create_visualization(workflow, complexity_metrics, quality_metrics, execution_estimate, output_path)
-    print(f"DAG visualization saved to {output_path}")
 
 if __name__ == "__main__":
     main()
