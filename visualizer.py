@@ -29,25 +29,39 @@ def create_visualization(workflow: Workflow, complexity_metrics: ComplexityMetri
     edge_colors = []
     edge_widths = []
     
+    # Get critical path for visualization
+    try:
+        critical_path = nx.dag_longest_path(workflow.dag) if nx.is_directed_acyclic_graph(workflow.dag) else []
+    except:
+        critical_path = []
+    
     for node in workflow.dag.nodes():
         st = workflow.dag.nodes[node]["obj"]
         
-        # Base color by mode
-        if st.mode == "WIDE":
-            base_color = "skyblue"
-        elif st.mode == "DEEP":
-            base_color = "lightgreen"
-        else:  # Handle None or unknown modes
-            base_color = "lightcoral"
+        # Check if this is a group node
+        is_group = workflow.dag.nodes[node].get('is_group', False)
+        is_on_critical_path = node in critical_path
         
-        # Modify color based on critical path
-        if workflow.dag.nodes[node].get('on_critical_path', False):
+        if is_group:
+            # Group nodes are light gray
+            base_color = "lightgray"
+        else:
+            # Base color by mode
             if st.mode == "WIDE":
-                base_color = "dodgerblue"
+                base_color = "skyblue"
             elif st.mode == "DEEP":
-                base_color = "green"
+                base_color = "lightgreen"
             else:  # Handle None or unknown modes
-                base_color = "darkred"
+                base_color = "lightcoral"
+            
+            # Modify color based on critical path
+            if is_on_critical_path:
+                if st.mode == "WIDE":
+                    base_color = "dodgerblue"
+                elif st.mode == "DEEP":
+                    base_color = "green"
+                else:  # Handle None or unknown modes
+                    base_color = "darkred"
         
         node_colors.append(base_color)
         
@@ -60,12 +74,24 @@ def create_visualization(workflow: Workflow, complexity_metrics: ComplexityMetri
         
         node_sizes.append(base_size)
     
-    # Edge styling based on confidence and conflicts
+    # Create critical path edges set for fast lookup
+    critical_path_edges = set()
+    if len(critical_path) > 1:
+        for i in range(len(critical_path) - 1):
+            critical_path_edges.add((critical_path[i], critical_path[i+1]))
+    
+    # Edge styling based on confidence, conflicts, and critical path
     for edge in workflow.dag.edges(data=True):
+        u, v = edge[0], edge[1]
         confidence = edge[2].get('confidence', 0.7)
         has_conflict = edge[2].get('has_resource_conflict', False)
+        is_critical_edge = (u, v) in critical_path_edges
         
-        if has_conflict:
+        if is_critical_edge:
+            # Critical path edges are thick and dark blue
+            edge_colors.append('darkblue')
+            edge_widths.append(4.0)
+        elif has_conflict:
             edge_colors.append('red')
             edge_widths.append(3.0)
         elif confidence > 0.8:
@@ -97,9 +123,10 @@ def create_visualization(workflow: Workflow, complexity_metrics: ComplexityMetri
         Patch(facecolor="skyblue", edgecolor="black", label="WIDE Search"),
         Patch(facecolor="lightgreen", edgecolor="black", label="DEEP Reasoning"),
         Patch(facecolor="lightcoral", edgecolor="black", label="Unknown Mode"),
+        Patch(facecolor="lightgray", edgecolor="black", label="Group Node"),
         Patch(facecolor="dodgerblue", edgecolor="black", label="WIDE (Critical Path)"),
         Patch(facecolor="green", edgecolor="black", label="DEEP (Critical Path)"),
-        Patch(facecolor="darkred", edgecolor="black", label="Unknown (Critical Path)"),
+        plt.Line2D([0], [0], color='darkblue', lw=4, label='Critical Path'),
         plt.Line2D([0], [0], color='darkgreen', lw=2, label='High Confidence Dependency'),
         plt.Line2D([0], [0], color='orange', lw=1.5, label='Low Confidence Dependency'),
         plt.Line2D([0], [0], color='red', lw=3, label='Resource Conflict')
@@ -175,29 +202,16 @@ def create_visualization(workflow: Workflow, complexity_metrics: ComplexityMetri
     
     # Create task summary table
     table_data = []
+    group_nodes: set[str] = set()
+    
+    # First, collect all actual subtasks (non-group nodes)
     for st in workflow.subtasks:
         # Only include subtasks that actually exist in the DAG
         if st.id in workflow.dag.nodes:
             node_data = workflow.dag.nodes[st.id]
-            parallel_level = node_data.get('parallel_level', 'N/A')
-            on_critical = '✓' if node_data.get('on_critical_path', False) else ''
-            peer_count = len(node_data.get('parallel_peers', []))
+            is_group = node_data.get('is_group', False)
             
-            table_data.append([
-                st.id,
-                st.mode or "Unknown",
-                f"Level {parallel_level}" if parallel_level != 'N/A' else 'N/A',
-                on_critical,
-                peer_count,
-                st.description[:50] + "..." if len(st.description) > 50 else st.description
-            ])
-    
-    # Also add any DAG nodes that aren't in the subtasks list (for hierarchical approaches)
-    for node_id in workflow.dag.nodes():
-        if not any(st.id == node_id for st in workflow.subtasks):
-            node_data = workflow.dag.nodes[node_id]
-            st = node_data.get('obj')
-            if st:
+            if not is_group:
                 parallel_level = node_data.get('parallel_level', 'N/A')
                 on_critical = '✓' if node_data.get('on_critical_path', False) else ''
                 peer_count = len(node_data.get('parallel_peers', []))
@@ -210,6 +224,52 @@ def create_visualization(workflow: Workflow, complexity_metrics: ComplexityMetri
                     peer_count,
                     st.description[:50] + "..." if len(st.description) > 50 else st.description
                 ])
+            else:
+                group_nodes.add(st.id)
+    
+    # Add any DAG nodes that aren't in the subtasks list (for hierarchical approaches)  
+    for node_id in workflow.dag.nodes():
+        if not any(st.id == node_id for st in workflow.subtasks):
+            node_data = workflow.dag.nodes[node_id]
+            is_group = node_data.get('is_group', False)
+            st = node_data.get('obj')
+            
+            if st:
+                if not is_group:
+                    parallel_level = node_data.get('parallel_level', 'N/A')
+                    on_critical = '✓' if node_data.get('on_critical_path', False) else ''
+                    peer_count = len(node_data.get('parallel_peers', []))
+                    
+                    table_data.append([
+                        st.id,
+                        st.mode or "Unknown",
+                        f"Level {parallel_level}" if parallel_level != 'N/A' else 'N/A',
+                        on_critical,
+                        peer_count,
+                        st.description[:50] + "..." if len(st.description) > 50 else st.description
+                    ])
+                else:
+                    group_nodes.add(st.id)
+    
+    # Add group node summaries at the end
+    for group_id in group_nodes:
+        # Find children of this group node
+        children = list(workflow.dag.successors(group_id))
+        actual_children = [c for c in children if not workflow.dag.nodes[c].get('is_group', False)]
+        
+        if actual_children:
+            children_str = ", ".join(actual_children[:3])  # Show first 3 children
+            if len(actual_children) > 3:
+                children_str += f", +{len(actual_children) - 3} more"
+            
+            table_data.append([
+                f"<{group_id}>",
+                "GROUP",
+                "N/A",
+                "",
+                len(actual_children),
+                f"Contains: {children_str}"
+            ])
     
     table_headers = ['Task ID', 'Mode', 'Parallel Level', 'Critical', 'Peers', 'Description']
     

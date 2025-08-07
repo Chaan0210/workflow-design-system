@@ -1,20 +1,4 @@
-# prompts.py — v2 (2025‑08‑06)
-#
-# Centralized prompt templates tuned for *structured‑output reliability* and
-# *planning‑quality*, informed by recent research:
-#   • Schema‑based prompting (SchemaBench, 2025)
-#   • Few‑shot / instruction synergy (Schick et al., 2022; Shelf.io blog, 2024)
-#   • Constrained JSON generation guides (OpenAI Structured Outputs, 2025)
-#
-# Key improvements vs v1:
-# 1. Single‑source of truth for JSON schema → every prompt embeds the exact
-#    JSON skeleton the model must return; no prose allowed.
-# 2. Strict delimiters using ```json / ``` to reduce hallucinated text.
-# 3. Step‑back thinking ("Analyse step‑by‑step **internally**, do **not**
-#    expose chain‑of‑thought") to encourage reasoning without leaking.
-# 4. Few‑shot anchors (1 example per complex prompt) to ground the format.
-# 5. Parallel‑aware guidelines in matrix generation prompt emphasise
-#    independence detection heuristics.
+# prompts.py
 
 from __future__ import annotations
 
@@ -24,35 +8,22 @@ class WorkflowPrompts:
     DECOMPOSITION = (
         """\
 ### SYSTEM
-You are *PlanGPT*, an expert workflow architect.
+You are a world expert at making efficient plans.
 Think carefully, de‑duplicate similar steps, and ensure coverage of the main
-objective. **DO NOT** perform dependency analysis here.
+objective.
 Respond with **ONLY** valid JSON — no surrounding prose.
 
 ```json schema
 [
   {{"id": "S1", "desc": "<string>"}},
-  {{"id": "S2", "desc": "<string>"}}
+  {{"id": "S2", "desc": "<string>"}},
+  ...
 ]
 ```
 
 ### USER
 Task Requirements:
 {task}
-
-### EXAMPLE (few‑shot)
-Input: "Plan a weekend city break in Paris for two"
-Output:
-```json
-[
-  {{"id": "S1", "desc": "Book return train/flight tickets"}},
-  {{"id": "S2", "desc": "Reserve central accommodation"}},
-  {{"id": "S3", "desc": "Draft 2‑day sightseeing itinerary"}},
-  {{"id": "S4", "desc": "Purchase museum passes"}}
-]
-```
-
-### NOW COMPLETE THE TASK ABOVE
 """
     )
 
@@ -241,25 +212,44 @@ Output JSON that matches the schema; no extra commentary.
 }}
 ```
 
-### EXAMPLE
-Input subtasks: S1: Find pace, S2: Find distance, S3: Calculate time
-Output:
-```json
+### USER
+Original Task: {task}
+Existing Subtasks:
+{subtask_list}
+"""
+    )
+
+    HIERARCHICAL_DECOMPOSE = (
+        """\
+### SYSTEM
+You are an intelligent workflow planner. Decompose the given task into a hierarchical tree structure where:
+
+- Each task can have sub-tasks
+- Sub-tasks at the same level can potentially run in parallel
+- Parent tasks depend on their children completing first
+- The tree structure represents natural dependency relationships
+
+Return a JSON tree structure where each node has:
+- "id": unique identifier
+- "desc": task description
+- "children": list of child tasks (empty list if leaf node)
+
+```json schema
 {{
   "id": "ROOT",
-  "desc": "Calculate running time",
+  "desc": "Main task description",
   "children": [
     {{
-      "id": "data_gathering",
-      "desc": "Gather required data",
+      "id": "S1",
+      "desc": "First major subtask",
       "children": [
-        {{"id": "S1", "desc": "Find pace", "children": []}},
-        {{"id": "S2", "desc": "Find distance", "children": []}}
+        {{"id": "S1.1", "desc": "First sub-subtask", "children": []}},
+        {{"id": "S1.2", "desc": "Second sub-subtask", "children": []}}
       ]
     }},
     {{
-      "id": "S3", 
-      "desc": "Calculate time",
+      "id": "S2",
+      "desc": "Second major subtask",
       "children": []
     }}
   ]
@@ -267,9 +257,8 @@ Output:
 ```
 
 ### USER
-Original Task: {task}
-Existing Subtasks:
-{subtask_list}
+Task Requirements:
+{task}
 """
     )
 
@@ -388,6 +377,11 @@ class PromptManager:
         )
     
     @staticmethod
+    def format_hierarchical_decompose_prompt(task: str) -> str:
+        """Format hierarchical decomposition prompt."""
+        return ApproachSpecificPrompts.HIERARCHICAL_DECOMPOSE.format(task=task)
+    
+    @staticmethod
     def format_matrix_generation_prompt(original_task: str, subtask_list: str) -> str:
         """Format matrix generation prompt."""
         return ApproachSpecificPrompts.MATRIX_GENERATION.format(
@@ -409,3 +403,4 @@ DECOMPOSITION_TEMPLATE = WorkflowPrompts.DECOMPOSITION
 MODE_CLASSIFICATION_TEMPLATE = WorkflowPrompts.MODE_CLASSIFICATION
 COMPLEXITY_ANALYSIS_TEMPLATE = WorkflowPrompts.COMPLEXITY_ANALYSIS
 QUALITY_VALIDATION_TEMPLATE = WorkflowPrompts.QUALITY_VALIDATION
+HIERARCHICAL_DECOMPOSE_TEMPLATE = ApproachSpecificPrompts.HIERARCHICAL_DECOMPOSE

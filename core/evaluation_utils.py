@@ -13,27 +13,31 @@ class MetricsCalculator:
     @staticmethod
     def structural_metrics(pred: nx.DiGraph, gold: Optional[nx.DiGraph] = None) -> Dict[str, Any]:
         """Calculate graph-structural indicators."""
+        # Filter out group nodes for fair comparison
+        actual_nodes = [n for n in pred.nodes() if not pred.nodes[n].get('is_group', False)]
+        actual_pred = pred.subgraph(actual_nodes).copy()
+        
         metrics: Dict[str, Any] = {
-            "num_nodes": pred.number_of_nodes(),
-            "num_edges": pred.number_of_edges(),
-            "is_dag": nx.is_directed_acyclic_graph(pred),
-            "density": nx.density(pred) if pred.number_of_nodes() > 1 else 0.0,
+            "num_nodes": len(actual_nodes),
+            "num_edges": actual_pred.number_of_edges(),
+            "is_dag": nx.is_directed_acyclic_graph(actual_pred),
+            "density": nx.density(actual_pred) if len(actual_nodes) > 1 else 0.0,
             "average_degree": (
-                sum(dict(pred.degree()).values()) / pred.number_of_nodes()
-                if pred.number_of_nodes() > 0 else 0.0
+                sum(dict(actual_pred.degree()).values()) / len(actual_nodes)
+                if len(actual_nodes) > 0 else 0.0
             ),
         }
 
-        # Longest path length (counted in nodes)
+        # Longest path length (counted in nodes) - use filtered graph
         if metrics["is_dag"]:
             try:
-                metrics["longest_path_len"] = len(nx.dag_longest_path(pred))
+                metrics["longest_path_len"] = len(nx.dag_longest_path(actual_pred))
             except nx.NetworkXNoPath:
                 metrics["longest_path_len"] = 0
         else:
             metrics["longest_path_len"] = None
 
-        # Gold-based stats
+        # Gold-based stats or relative metrics
         if gold is not None:
             gold_nodes = set(gold.nodes())
             pred_nodes = set(pred.nodes())
@@ -55,17 +59,39 @@ class MetricsCalculator:
                 "edge_recall": recall,
                 "edge_f1": f1,
             })
+        else:
+            # When no gold standard, provide relative quality metrics
+            # These will be meaningful for comparison between approaches
+            metrics.update({
+                "edge_precision": None,
+                "edge_recall": None, 
+                "edge_f1": None,
+                "node_recall": None,
+                # Add relative structural quality metrics
+                "connectivity_ratio": metrics["num_edges"] / max(1, metrics["num_nodes"] - 1) if metrics["num_nodes"] > 1 else 0,
+                "structure_quality": min(1.0, metrics["density"] * 2) if metrics["density"] else 0  # Normalized density score
+            })
 
         return metrics
     
     @staticmethod
     def execution_metrics(dag: nx.DiGraph, durations: Dict[str, float], 
-                         resources: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                         resources: Optional[Dict[str, Any]] = None, *, 
+                         exclude_group_nodes: bool = True) -> Dict[str, Any]:
         """Calculate execution-oriented quality measures."""
-        serial_time = sum(durations.get(n, 1.0) for n in dag.nodes())
+        # Filter out group nodes for consistent critical path calculation if requested
+        if exclude_group_nodes:
+            actual_nodes = [n for n in dag.nodes() if not dag.nodes[n].get('is_group', False)]
+            filtered_dag = dag.subgraph(actual_nodes).copy()
+            filtered_durations = {n: durations.get(n, 1.0) for n in actual_nodes}
+        else:
+            filtered_dag = dag
+            filtered_durations = durations
+            
+        serial_time = sum(filtered_durations.get(n, 1.0) for n in filtered_dag.nodes())
 
         try:
-            crit_time = MetricsCalculator._critical_path_time(dag, durations)
+            crit_time = MetricsCalculator._critical_path_time(filtered_dag, filtered_durations)
         except ValueError:
             crit_time = None
 
@@ -75,8 +101,8 @@ class MetricsCalculator:
 
         # Resource conflict rate
         conflict_edges = 0
-        if resources is not None and dag.number_of_edges() > 0:
-            for u, v in dag.edges():
+        if resources is not None and filtered_dag.number_of_edges() > 0:
+            for u, v in filtered_dag.edges():
                 r_u, r_v = resources.get(u), resources.get(v)
                 if r_u is None or r_v is None:
                     continue
@@ -85,14 +111,18 @@ class MetricsCalculator:
                         conflict_edges += 1
                 elif r_u == r_v:
                     conflict_edges += 1
-            conflict_rate = conflict_edges / dag.number_of_edges()
+            conflict_rate = conflict_edges / filtered_dag.number_of_edges()
         else:
             conflict_rate = 0.0
 
         return {
             "serial_time": serial_time,
             "critical_path_time": crit_time,
-            "parallel_efficiency": parallel_eff,
+            # ── 새 필드들 ────────────────────
+            "parallel_efficiency_path": parallel_eff,
+            "parallel_efficiency": parallel_eff,               # (이전 호환용)
+            # 필요 시 블록 기반 값도 넣을 수 있도록 placeholder
+            "parallel_efficiency_block": None,                 # 채워 넣을 곳 마련
             "resource_conflict_rate": conflict_rate,
         }
     
@@ -226,25 +256,44 @@ class QualityAssessor:
         if not per_approach_metrics:
             return {"error": "No approaches to evaluate"}
         
+        # Normalize build_time for comparison (invert so lower time = higher score)
+        build_times = [metrics.get("build_time", 1) for metrics in per_approach_metrics.values()]
+        max_build_time = max(build_times) if build_times else 1
+        
+        normalized_metrics = {}
+        for approach, metrics in per_approach_metrics.items():
+            normalized = metrics.copy()
+            # Invert build_time so faster approaches get higher scores
+            normalized["build_speed"] = 1 - (metrics.get("build_time", 1) / max_build_time)
+            normalized_metrics[approach] = normalized
+        
         # Scoring weights for different use cases
         use_case_weights = {
             "speed_focused": {
-                "parallel_efficiency": 0.4,
-                "edge_f1": 0.2,
-                "node_recall": 0.2,
-                "resource_conflict_rate": -0.2,
+                "build_speed": 0.4,  # Use build_speed instead of build_time
+                "parallel_efficiency": 0.3,
+                "edge_f1": 0.1,
+                "node_recall": 0.1,
+                "connectivity_ratio": 0.05,
+                "structure_quality": 0.05,
+                "resource_conflict_rate": -0.1,
             },
             "quality_focused": {
-                "edge_f1": 0.4,
-                "node_recall": 0.3,
-                "parallel_efficiency": 0.2,
+                "edge_f1": 0.3,
+                "node_recall": 0.25,
+                "connectivity_ratio": 0.15,
+                "structure_quality": 0.15,
+                "parallel_efficiency": 0.1,
                 "resource_conflict_rate": -0.1,
             },
             "balanced": {
-                "parallel_efficiency": 0.3,
-                "edge_f1": 0.3,
-                "node_recall": 0.2,
-                "resource_conflict_rate": -0.2,
+                "build_speed": 0.2,
+                "parallel_efficiency": 0.2,
+                "edge_f1": 0.2,
+                "node_recall": 0.15,
+                "connectivity_ratio": 0.125,
+                "structure_quality": 0.125,
+                "resource_conflict_rate": -0.1,
             }
         }
         
@@ -255,10 +304,11 @@ class QualityAssessor:
             best_score = float('-inf')
             
             scores = {}
-            for approach, metrics in per_approach_metrics.items():
+            for approach, metrics in normalized_metrics.items():
                 score = 0
                 for metric, weight in weights.items():
                     value = metrics.get(metric, 0)
+                    # Skip None values (missing gold standard metrics) but count relative metrics
                     if value is not None:
                         score += value * weight
                 scores[approach] = score
@@ -272,7 +322,7 @@ class QualityAssessor:
                 "score": best_score,
                 "all_scores": scores,
                 "reasoning": QualityAssessor._generate_reasoning(best_approach, use_case, 
-                                                               per_approach_metrics[best_approach] if best_approach else {})
+                                                               normalized_metrics[best_approach] if best_approach else {})
             }
         
         return recommendations
@@ -287,14 +337,24 @@ class QualityAssessor:
         reasoning_parts = [f"{approach} is recommended for {use_case} use case because:"]
         
         if use_case == "speed_focused":
+            build_speed = metrics.get("build_speed", 0)
             parallel_eff = metrics.get("parallel_efficiency", 0)
-            reasoning_parts.append(f"- High parallel efficiency ({parallel_eff:.3f})")
+            build_time = metrics.get("build_time", 0)
+            reasoning_parts.append(f"- Fast build time ({build_time:.2f}s)")
+            reasoning_parts.append(f"- Good parallel efficiency ({parallel_eff:.3f})")
             
         elif use_case == "quality_focused":
-            edge_f1 = metrics.get("edge_f1", 0)
-            node_recall = metrics.get("node_recall", 0)
-            reasoning_parts.append(f"- Excellent edge accuracy (F1: {edge_f1:.3f})")
-            reasoning_parts.append(f"- High node recall ({node_recall:.3f})")
+            edge_f1 = metrics.get("edge_f1")
+            node_recall = metrics.get("node_recall")
+            connectivity = metrics.get("connectivity_ratio", 0)
+            structure_quality = metrics.get("structure_quality", 0)
+            
+            if edge_f1 is not None and node_recall is not None:
+                reasoning_parts.append(f"- Excellent edge accuracy (F1: {edge_f1:.3f})")
+                reasoning_parts.append(f"- High node recall ({node_recall:.3f})")
+            else:
+                reasoning_parts.append(f"- Good structural connectivity ({connectivity:.3f})")
+                reasoning_parts.append(f"- High structure quality ({structure_quality:.3f})")
             
         elif use_case == "balanced":
             reasoning_parts.append("- Well-balanced performance across all metrics")
@@ -342,7 +402,14 @@ class ComparisonEvaluator:
             structural = MetricsCalculator.structural_metrics(dag, gold)
             execution = MetricsCalculator.execution_metrics(dag, durations, resources)
             
-            per_approach[approach_name] = {**structural, **execution}
+            # Add build performance metrics for recommendations
+            build_metrics = result.get("metrics", {})
+            performance_metrics = {
+                "build_time": build_metrics.get("build_time", 0),
+                "total_llm_calls": build_metrics.get("total_llm_calls", 0)
+            }
+            
+            per_approach[approach_name] = {**structural, **execution, **performance_metrics}
         
         # Generate aggregate statistics
         aggregate_summary = {}

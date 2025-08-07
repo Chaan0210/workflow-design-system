@@ -43,11 +43,11 @@ class MatrixParallelApproach(DAGApproach):
             print(f"   ✅ Enhanced DAG created: {dag.number_of_nodes()} nodes, {dag.number_of_edges()} edges")
             print(f"   📊 DAG edges: {list(dag.edges())}")
             
-            # Calculate parallel efficiency
-            parallel_efficiency = self._calculate_parallel_efficiency_from_blocks(
+            # Calculate parallel efficiency from blocks
+            block_efficiency = self._calculate_parallel_efficiency_from_blocks(
                 matrix_data.get("parallel_blocks", [])
             )
-            print(f"   ⚡ Parallel efficiency: {parallel_efficiency:.3f}")
+            print(f"   ⚡ Block parallel efficiency: {block_efficiency:.3f}")
             
             llm_calls = 1
             fallback_used = False
@@ -59,14 +59,19 @@ class MatrixParallelApproach(DAGApproach):
             dag = self._create_sequential_dag(subtasks)
             llm_calls = 0
             fallback_used = True
-            parallel_efficiency = 0.0
+            block_efficiency = 0.0
+        
+        # Calculate path-based efficiency for comparison
+        path_efficiency = self._calculate_path_based_efficiency(dag) if not fallback_used else 0.0
         
         metrics = {
             "llm_matrix_calls": llm_calls,
             "total_llm_calls": llm_calls,
             "matrix_size": len(subtasks) ** 2,
             "used_fallback": fallback_used,
-            "parallel_efficiency": parallel_efficiency,
+            "parallel_efficiency_block": block_efficiency,  # From parallel blocks analysis
+            "parallel_efficiency_path": path_efficiency,    # From critical path analysis
+            "parallel_efficiency": path_efficiency,         # Keep for backward compatibility
             "parallel_optimization": True,
             "approach_specific": "enhanced_parallel_matrix"
         }
@@ -95,25 +100,25 @@ class MatrixParallelApproach(DAGApproach):
         parallel_blocks = matrix_data.get("parallel_blocks", [])
         
         print(f"      Detected parallel blocks: {parallel_blocks}")
-        print(f"      Applying confidence cutoff (≥0.5)...")
+        print(f"      Applying confidence cutoff (≥0.3)...")
         
         edges_added = 0
         edges_rejected = 0
         
-        for i, from_task in enumerate(task_order):
-            for j, to_task in enumerate(task_order):
-                if matrix[i][j] == 1:
+        for i, dependent_task in enumerate(task_order):
+            for j, prerequisite_task in enumerate(task_order):
+                if matrix[i][j] == 1:  # dependent_task depends on prerequisite_task
                     confidence = conf_matrix[i][j]
-                    if confidence >= 0.5:
-                        dag.add_edge(from_task, to_task,
+                    if confidence >= 0.3:
+                        dag.add_edge(prerequisite_task, dependent_task,
                                    confidence=confidence,
                                    matrix_edge=True,
                                    parallel_optimized=True)
                         edges_added += 1
-                        print(f"         ✅ Added edge: {from_task} → {to_task} (conf: {confidence})")
+                        print(f"         ✅ Added edge: {prerequisite_task} → {dependent_task} (conf: {confidence})")
                     else:
                         edges_rejected += 1
-                        print(f"         ❌ Rejected edge: {from_task} → {to_task} (conf: {confidence} < 0.5)")
+                        print(f"         ❌ Rejected edge: {prerequisite_task} → {dependent_task} (conf: {confidence} < 0.3)")
         
         print(f"      Summary: {edges_added} edges added, {edges_rejected} edges rejected")
         
@@ -151,8 +156,9 @@ class MatrixParallelApproach(DAGApproach):
                 min_conf = float('inf')
                 
                 for u, v, _ in cycle:
-                    i, j = id_to_idx[u], id_to_idx[v]
-                    conf = conf_matrix[i][j]
+                    # u is prerequisite, v is dependent, so matrix[v][u] = 1 means v depends on u
+                    v_idx, u_idx = id_to_idx[v], id_to_idx[u]
+                    conf = conf_matrix[v_idx][u_idx]
                     if conf < min_conf:
                         min_conf = conf
                         weakest_edge = (u, v)
@@ -214,6 +220,23 @@ class MatrixParallelApproach(DAGApproach):
         parallel_tasks = sum(len(block) for block in parallel_blocks if len(block) > 1)
         
         return parallel_tasks / total_tasks
+    
+    def _calculate_path_based_efficiency(self, dag: nx.DiGraph) -> float:
+        """Calculate parallel efficiency based on critical path analysis."""
+        if dag.number_of_nodes() <= 1:
+            return 1.0
+        
+        try:
+            # Calculate level-based parallelization
+            levels = {}
+            for node in nx.topological_sort(dag):
+                preds = list(dag.predecessors(node))
+                levels[node] = 0 if not preds else max(levels[p] for p in preds) + 1
+            
+            max_level = max(levels.values()) if levels else 0
+            return max(0.0, 1.0 - (max_level + 1) / dag.number_of_nodes())
+        except:
+            return 0.5
     
     def _validate_enhanced_matrix_json(self, d: dict) -> None:
         """개선된 매트릭스 JSON 구조 검증"""

@@ -108,7 +108,10 @@ class DAGComparison:
                             print(f"   ⚡ Analysis time: {metrics['analysis_time']:.2f}s")
                         if 'pairs_per_second' in metrics:
                             print(f"   📊 Analysis rate: {metrics['pairs_per_second']:.1f} pairs/sec")
-                        if 'parallel_efficiency' in metrics:
+                        if 'parallel_efficiency_block' in metrics and 'parallel_efficiency_path' in metrics:
+                            print(f"   🔀 Block efficiency: {metrics['parallel_efficiency_block']:.3f}")
+                            print(f"   🔀 Path efficiency: {metrics['parallel_efficiency_path']:.3f}")
+                        elif 'parallel_efficiency' in metrics:
                             print(f"   🔀 Parallel efficiency: {metrics['parallel_efficiency']:.3f}")
                     
                     if 'fallback_used' in metrics:
@@ -289,23 +292,27 @@ class DAGComparison:
                 summary["successful_approaches"].append(approach_name)
                 metrics = result["metrics"]
                 
+                # Use consistent node/edge counting (exclude group nodes)
+                dag = result["dag"]
+                actual_nodes = [n for n in dag.nodes() if not dag.nodes[n].get('is_group', False)]
+                actual_dag = dag.subgraph(actual_nodes).copy()
+                
                 summary["performance_comparison"][approach_name] = {
                     "build_time": metrics["build_time"],
                     "total_llm_calls": metrics.get("total_llm_calls", 0),
-                    "nodes": metrics["nodes"],
-                    "edges": metrics["edges"],
+                    "nodes": len(actual_nodes),
+                    "edges": actual_dag.number_of_edges(),
                     "parallel_optimization": metrics.get("parallel_optimization", False)
                 }
                 
-                # Structural analysis
-                dag = result["dag"]
-                if nx.is_directed_acyclic_graph(dag) and dag.number_of_nodes() > 0:
+                # Structural analysis (use same filtered DAG for consistency)
+                if nx.is_directed_acyclic_graph(actual_dag) and len(actual_nodes) > 0:
                     try:
                         summary["structural_comparison"][approach_name] = {
                             "is_dag": True,
-                            "longest_path": len(nx.dag_longest_path(dag)),
-                            "average_degree": sum(dict(dag.degree()).values()) / dag.number_of_nodes(),
-                            "density": nx.density(dag)
+                            "longest_path": len(nx.dag_longest_path(actual_dag)),
+                            "average_degree": sum(dict(actual_dag.degree()).values()) / len(actual_nodes),
+                            "density": nx.density(actual_dag)
                         }
                     except:
                         summary["structural_comparison"][approach_name] = {"is_dag": True, "analysis_failed": True}
@@ -470,10 +477,14 @@ class DAGComparison:
             print()
         
         print("\nEXECUTION METRICS:")
-        execution_metrics = ["serial_time", "critical_path_time", "parallel_efficiency"]
+        execution_metrics = ["parallel_efficiency", "parallel_efficiency_path", "parallel_efficiency_block"]
         for metric in execution_metrics:
-            if metric in ["serial_time", "critical_path_time"]:
-                continue  # Skip time metrics in table
+            # Show only if at least one approach has this metric
+            has_metric = any(successful_results[approach]["execution_metrics"].get(metric) is not None 
+                           for approach in approaches)
+            if not has_metric:
+                continue
+                
             print(f"  {metric.replace('_', ' ').title():<28}", end="")
             for approach in approaches:
                 value = successful_results[approach]["execution_metrics"].get(metric, 0)

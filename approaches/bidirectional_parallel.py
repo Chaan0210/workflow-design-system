@@ -9,6 +9,7 @@ from models import SubTask
 from .base import DAGApproach
 from core import LLMClient, DAGProcessor
 from core.validation_utils import DAGValidator
+from prompts import PromptManager
 
 
 class BidirectionalParallelApproach(DAGApproach):    
@@ -20,8 +21,6 @@ class BidirectionalParallelApproach(DAGApproach):
         self.BATCH_SIZE = 8  # 병렬 처리 배치 크기
     
     def _build_dag_impl(self, subtasks: List[SubTask], original_task: str) -> Tuple[nx.DiGraph, Dict[str, Any]]:
-        """병렬 처리를 사용한 bidirectional DAG 구성"""
-        
         print("⚡ BIDIRECTIONAL-PARALLEL APPROACH - Using async batch processing...")
         print(f"   Original task: {original_task[:100]}...")
         print(f"   Subtasks ({len(subtasks)}): {[st.id for st in subtasks]}")
@@ -31,7 +30,7 @@ class BidirectionalParallelApproach(DAGApproach):
         for st in subtasks:
             dag.add_node(st.id, obj=st, description=st.description)
         
-        # 의존성 쌍 생성 (bidirectional)
+        # 의존성 쌍 생성 (bidirectional) - use SubTask objects for LLM analysis
         dependency_pairs = []
         subtask_map = {st.id: st for st in subtasks}  # ID로 SubTask 조회를 위한 맵
         
@@ -63,10 +62,15 @@ class BidirectionalParallelApproach(DAGApproach):
             if dependent and confidence >= self.CUTOFF_THRESHOLD:
                 # 높은 신뢰도 의존성 추가
                 if not dag.has_edge(task_b_id, task_a_id):  # 역방향 충돌 확인
-                    dag.add_edge(task_a_id, task_b_id, confidence=confidence, 
-                               has_resource_conflict=False, shared_resources=[])
-                    edge_conf_map[(task_a_id, task_b_id)] = confidence
+                    # Check for resource conflicts
+                    has_conflict, shared_resources = self._ask_resource_conflict(
+                        subtask_map[task_a_id], subtask_map[task_b_id]
+                    )
                     resource_calls += 1
+                    
+                    dag.add_edge(task_a_id, task_b_id, confidence=confidence, 
+                               has_resource_conflict=has_conflict, shared_resources=shared_resources)
+                    edge_conf_map[(task_a_id, task_b_id)] = confidence
             elif dependent and confidence >= self.LOW_CONF_THRESHOLD:
                 # 낮은 신뢰도 후보
                 low_conf_candidates.append((task_a_id, task_b_id, confidence))
@@ -74,10 +78,18 @@ class BidirectionalParallelApproach(DAGApproach):
         # 낮은 신뢰도 엣지 추가 (충돌 없는 경우만)
         for u, v, c in sorted(low_conf_candidates, key=lambda x: -x[2]):
             if not dag.has_edge(u, v) and not dag.has_edge(v, u):
+                # Check for resource conflicts for low confidence edges too
+                has_conflict, shared_resources = self._ask_resource_conflict(
+                    subtask_map[u], subtask_map[v]
+                )
+                resource_calls += 1
+                
                 dag.add_edge(u, v, confidence=round(c, 3),
-                           has_resource_conflict=False, shared_resources=[])
+                           has_resource_conflict=has_conflict, shared_resources=shared_resources)
         
-        print(f"   📊 Edges added: {dag.number_of_edges()} (high conf: {resource_calls}, low conf: {dag.number_of_edges()-resource_calls})")
+        high_conf_count = len([1 for (task_a_id, task_b_id), (dependent, confidence) in dependency_results.items() 
+                              if dependent and confidence >= self.CUTOFF_THRESHOLD and not dag.has_edge(task_b_id, task_a_id)])
+        print(f"   📊 Edges added: {dag.number_of_edges()} (high conf: {high_conf_count}, low conf: {dag.number_of_edges()-high_conf_count})")
         
         # 사이클 해결
         dag = self.dag_processor.resolve_cycles_intelligently(dag, edge_conf_map)
@@ -95,8 +107,8 @@ class BidirectionalParallelApproach(DAGApproach):
         
         metrics = {
             "llm_dependency_calls": n_pairs,
-            "llm_resource_calls": 0,  # 리소스 충돌은 간소화
-            "total_llm_calls": n_pairs,
+            "llm_resource_calls": resource_calls,
+            "total_llm_calls": n_pairs + resource_calls,
             "analysis_time": analysis_time,
             "pairs_per_second": n_pairs / analysis_time if analysis_time > 0 else 0,
             "batch_size": self.BATCH_SIZE,
@@ -104,3 +116,12 @@ class BidirectionalParallelApproach(DAGApproach):
         }
         
         return dag, metrics
+    
+    def _ask_resource_conflict(self, task_a: SubTask, task_b: SubTask) -> Tuple[bool, List[str]]:
+        """Ask LLM about resource conflicts between two subtasks."""
+        prompt = PromptManager.format_resource_conflict_analysis_prompt(task_a.description, task_b.description)
+        try:
+            result = self.llm_client.call_json(prompt)
+            return bool(result.get("has_conflict", False)), result.get("shared_resources", [])
+        except Exception:
+            return False, []

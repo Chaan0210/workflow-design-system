@@ -17,36 +17,60 @@ class HierarchicalApproach(DAGApproach):
         print("🌳 HIERARCHICAL APPROACH - Starting hierarchical decomposition...")
         print(f"   Original task: {original_task[:100]}...")
         
-        cross_tree_calls = 0  # Initialize here
+        cross_tree_calls = 0
         
-        # 1. Try to decompose hierarchically
+        # 1. Try new hierarchical decomposition approach first
         try:
-            print("   📤 Sending LLM request for hierarchical organization...")
-            tree_data = self._organize_hierarchical(original_task, subtasks)
+            print("   📤 Sending LLM request for hierarchical decomposition...")
+            tree_data = self._decompose_hierarchical(original_task)
             print(f"   📥 LLM Response received. Tree structure:")
             self._print_tree(tree_data, indent="      ")
             
-            print("   🔧 Converting tree to DAG...")
-            dag, cross_tree_calls = self._tree_to_dag(tree_data, subtasks)
+            print("   🔧 Converting tree to subtasks and DAG...")
+            subtasks_from_tree = self._tree_to_subtasks(tree_data)
+            dag, cross_tree_calls = self._tree_to_dag_new(tree_data, subtasks_from_tree)
+            
             print(f"   ✅ DAG created: {dag.number_of_nodes()} nodes, {dag.number_of_edges()} edges")
             print(f"   📊 DAG nodes: {list(dag.nodes())}")
             
-            total_llm_calls = 1 + cross_tree_calls  # Organization + cross-tree analysis
+            total_llm_calls = 1 + cross_tree_calls  # Decomposition + cross-tree analysis
             fallback_used = False
+            approach_method = "hierarchical_decompose"
             
         except Exception as e:
-            print(f"   ❌ Hierarchical decomposition failed: {e}")
-            print("   🔄 Using sequential fallback...")
-            # Fallback: create simple sequential structure
-            dag = self._create_sequential_dag(subtasks)
-            total_llm_calls = 0
-            fallback_used = True
+            print(f"   ❌ New hierarchical decomposition failed: {e}")
+            print("   🔄 Trying legacy organization approach...")
+            
+            # Fallback to legacy approach
+            try:
+                print("   📤 Sending LLM request for hierarchical organization...")
+                tree_data = self._organize_hierarchical(original_task, subtasks)
+                print(f"   📥 LLM Response received. Tree structure:")
+                self._print_tree(tree_data, indent="      ")
+                
+                print("   🔧 Converting tree to DAG...")
+                dag, cross_tree_calls = self._tree_to_dag(tree_data, subtasks)
+                print(f"   ✅ DAG created: {dag.number_of_nodes()} nodes, {dag.number_of_edges()} edges")
+                print(f"   📊 DAG nodes: {list(dag.nodes())}")
+                
+                total_llm_calls = 1 + cross_tree_calls  # Organization + cross-tree analysis
+                fallback_used = False
+                approach_method = "hierarchical_organize"
+                
+            except Exception as e2:
+                print(f"   ❌ Legacy hierarchical approach also failed: {e2}")
+                print("   🔄 Using sequential fallback...")
+                # Final fallback: create simple sequential structure
+                dag = self._create_sequential_dag(subtasks)
+                total_llm_calls = 0
+                fallback_used = True
+                approach_method = "sequential_fallback"
         
         metrics = {
             "llm_organization_calls": 1 if not fallback_used else 0,
             "llm_cross_tree_calls": cross_tree_calls if not fallback_used else 0,
             "total_llm_calls": total_llm_calls,
-            "approach_specific": "hierarchical_tree",
+            "approach_specific": approach_method,
             "fallback_used": fallback_used
         }
         
@@ -58,11 +82,125 @@ class HierarchicalApproach(DAGApproach):
         for child in node.get('children', []):
             self._print_tree(child, indent + "  ")
     
+    def _decompose_hierarchical(self, task: str) -> Dict[str, Any]:
+        """Decompose task into hierarchical tree structure using the new template."""
+        prompt = PromptManager.format_hierarchical_decompose_prompt(task)
+        return self.llm_client.call_json(prompt, validator=self._validate_tree_json)
+    
     def _organize_hierarchical(self, task: str, subtasks: List[SubTask]) -> Dict[str, Any]:
-        """Organize subtasks into hierarchical tree."""
+        """Organize subtasks into hierarchical tree (legacy method)."""
         subtask_list = "\n".join([f"{st.id}: {st.description}" for st in subtasks])
         prompt = PromptManager.format_hierarchical_organization_prompt(task, subtask_list)
         return self.llm_client.call_json(prompt, validator=self._validate_tree_json)
+    
+    def _tree_to_subtasks(self, tree: Dict[str, Any]) -> List[SubTask]:
+        """Convert tree structure to flat list of SubTasks."""
+        subtasks = []
+        
+        def traverse(node):
+            # Only add non-root nodes as subtasks
+            if node["id"] != "ROOT":
+                subtasks.append(SubTask(id=node["id"], description=node["desc"]))
+            
+            for child in node["children"]:
+                traverse(child)
+        
+        traverse(tree)
+        return subtasks
+    
+    def _tree_to_dag_new(self, tree: Dict[str, Any], subtasks: List[SubTask]) -> Tuple[nx.DiGraph, int]:
+        """Convert hierarchical tree to DAG with parent->child dependencies (new method)."""
+        dag = nx.DiGraph()
+        
+        # Create mapping from ID to SubTask for adding obj attributes
+        subtask_map = {st.id: st for st in subtasks}
+        
+        def add_nodes_and_edges(node, parent_id=None):
+            node_id = node["id"]
+            if node_id != "ROOT":  # Skip root node
+                # Add node with both description and obj attributes
+                subtask_obj = subtask_map.get(node_id, SubTask(id=node_id, description=node["desc"]))
+                dag.add_node(node_id, description=node["desc"], obj=subtask_obj)
+                
+                # Add edges from parent to this node (dependency relationship)
+                if parent_id and node_id != "ROOT":
+                    dag.add_edge(parent_id, node_id, confidence=1.0, tree_edge=True)
+            
+            # Recursively process children
+            current_parent = node_id if node_id != "ROOT" else parent_id
+            for child in node["children"]:
+                add_nodes_and_edges(child, current_parent)
+        
+        print(f"      Processing tree structure...")
+        add_nodes_and_edges(tree)
+        
+        # Add cross-tree dependencies using selective LLM calls
+        cross_tree_calls = self._add_cross_tree_dependencies_new(dag, tree)
+        
+        # Mandatory cycle removal after cross-tree dependencies
+        dag = self._resolve_hierarchical_cycles(dag)
+        
+        # Apply rule-based pruning for formatting tasks
+        dag = self.dag_processor.apply_rule_based_pruning(dag)
+        
+        # Apply post-processing
+        self.dag_processor.post_process_graph(dag)
+        
+        return dag, cross_tree_calls
+    
+    def _add_cross_tree_dependencies_new(self, dag: nx.DiGraph, tree: Dict[str, Any]) -> int:
+        """Add dependencies between different branches of the tree (new method)."""
+        import itertools
+        
+        nodes = list(dag.nodes())
+        cross_tree_calls = 0
+        
+        # Only check dependencies between nodes that are not in parent-child relationship
+        for a, b in itertools.combinations(nodes, 2):
+            if not (dag.has_edge(a, b) or dag.has_edge(b, a)):
+                # Check if they're in different subtrees
+                if self._are_in_different_subtrees(a, b, tree):
+                    # Use LLM to determine cross-tree dependencies
+                    subtask_a = dag.nodes[a]['obj']
+                    subtask_b = dag.nodes[b]['obj']
+                    
+                    dep_ab, conf_ab = self._ask_cross_tree_dependency(subtask_a, subtask_b)
+                    cross_tree_calls += 1
+                    
+                    dep_ba, conf_ba = self._ask_cross_tree_dependency(subtask_b, subtask_a)
+                    cross_tree_calls += 1
+                    
+                    # Add edge for higher confidence dependency
+                    if dep_ab and conf_ab >= 0.5:
+                        if not dep_ba or conf_ab >= conf_ba:
+                            # Add resource conflict metadata for cross-tree edges
+                            has_conflict, conflict_resources = self._ask_resource_conflict(subtask_a, subtask_b)
+                            cross_tree_calls += 1
+                            dag.add_edge(a, b, confidence=conf_ab, cross_tree=True,
+                                       has_resource_conflict=has_conflict, shared_resources=conflict_resources)
+                    elif dep_ba and conf_ba >= 0.5:
+                        # Add resource conflict metadata for cross-tree edges
+                        has_conflict, conflict_resources = self._ask_resource_conflict(subtask_b, subtask_a)
+                        cross_tree_calls += 1
+                        dag.add_edge(b, a, confidence=conf_ba, cross_tree=True,
+                                   has_resource_conflict=has_conflict, shared_resources=conflict_resources)
+        
+        return cross_tree_calls
+    
+    def _are_in_different_subtrees(self, node_a: str, node_b: str, tree: Dict[str, Any]) -> bool:
+        """Check if two nodes are in different subtrees."""
+        def find_subtree_root(node_id, current_node):
+            if current_node["id"] == node_id:
+                return current_node["id"]
+            for child in current_node["children"]:
+                result = find_subtree_root(node_id, child)
+                if result:
+                    return current_node["id"] if current_node["id"] != "ROOT" else result
+            return None
+        
+        root_a = find_subtree_root(node_a, tree)
+        root_b = find_subtree_root(node_b, tree)
+        return root_a != root_b
     
     def _tree_to_dag(self, tree: Dict[str, Any], subtasks: List[SubTask]) -> Tuple[nx.DiGraph, int]:
         """Convert tree to DAG with hierarchical parent->child edges."""
@@ -80,8 +218,8 @@ class HierarchicalApproach(DAGApproach):
                     dag.add_node(node_id, description=subtask_obj.description, obj=subtask_obj)
                     actual_subtasks.append(node_id)
                 else:
-                    # This is a grouping node - create a placeholder
-                    dag.add_node(node_id, description=node["desc"], obj=SubTask(id=node_id, description=node["desc"], mode="DEEP"))
+                    # This is a grouping node - create a placeholder and mark as group
+                    dag.add_node(node_id, description=node["desc"], obj=SubTask(id=node_id, description=node["desc"], mode="DEEP"), is_group=True)
                 
                 # Add parent->child edge (hierarchical dependency)
                 if parent_id and parent_id != "ROOT":
