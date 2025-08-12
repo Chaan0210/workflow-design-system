@@ -17,4 +17,9 @@ __pycache__/
 # Outputs
 workflow_outputs/
 
+# CLAUDE
 CLAUDE.md
+CLAUDE.md.backup
+.claude/
+.mcp.json
+requirements-dev.txt

@@ -42,7 +42,6 @@ def create_dummy_metrics():
         coherence_score=0.85,
         efficiency_score=0.7,
         feasibility_score=0.95,
-        overall_quality=0.85,
         validation_errors=[],
         warnings=[],
         suggestions=[]
@@ -97,7 +96,7 @@ def print_comparison_summary(results: dict, evaluation_report: dict = None):
     
     summary = results.get("comparison_summary", {})
     successful = summary.get("successful_approaches", [])
-    total_approaches = len([a for a in ["hierarchical", "bidirectional_parallel", "matrix_parallel"]])
+    total_approaches = len([a for a in ["hierarchical", "bidirectional", "matrix"]])
     
     print(f"Successful approaches: {len(successful)}/{total_approaches}")
     for approach in successful:

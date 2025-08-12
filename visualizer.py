@@ -137,13 +137,17 @@ def create_visualization(workflow: Workflow, complexity_metrics: ComplexityMetri
     
     # Complexity metrics dashboard
     ax_complexity = plt.subplot2grid((4, 3), (0, 2))
+    # Calculate average quality score
+    avg_quality = (quality_metrics.completeness_score + quality_metrics.coherence_score + 
+                  quality_metrics.efficiency_score + quality_metrics.feasibility_score) / 4.0
+    
     complexity_data = [
         complexity_metrics.base_score / 20.0,  # Normalize to 0-1
         complexity_metrics.uncertainty_score,
         complexity_metrics.parallel_efficiency,
-        quality_metrics.overall_quality
+        avg_quality
     ]
-    complexity_labels = ['Complexity', 'Uncertainty', 'Efficiency', 'Quality']
+    complexity_labels = ['Complexity', 'Uncertainty', 'Efficiency', 'Avg Quality']
     
     bars = ax_complexity.bar(complexity_labels, complexity_data, 
                            color=['red', 'orange', 'blue', 'green'])
@@ -294,7 +298,7 @@ Task ID: {workflow.task_id}
 Original Task: {workflow.original_prompt}
 
 ## Executive Summary
-- **Overall Quality Score**: {quality_metrics.overall_quality:.3f}/1.0
+- **Average Quality Score**: {(quality_metrics.completeness_score + quality_metrics.coherence_score + quality_metrics.efficiency_score + quality_metrics.feasibility_score) / 4.0:.3f}/1.0
 - **Complexity Score**: {complexity_metrics.base_score:.2f}
 - **Uncertainty Level**: {complexity_metrics.uncertainty_score:.3f}
 - **Estimated Execution Time**: {execution_estimate.estimated_total_time:.1f} hours

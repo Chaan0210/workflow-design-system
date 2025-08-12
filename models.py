@@ -59,7 +59,6 @@ class WorkflowQualityMetrics:
     coherence_score: float     # 0-1: How logically connected the workflow is
     efficiency_score: float    # 0-1: How well structured for parallel execution
     feasibility_score: float   # 0-1: How realistic the workflow is
-    overall_quality: float     # 0-1: Combined quality score
     validation_errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     suggestions: List[str] = field(default_factory=list)

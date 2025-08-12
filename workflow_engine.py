@@ -58,7 +58,7 @@ class WorkflowEngine:
         # 5. Validate quality
         print("  ✅ Validating workflow quality...")
         quality_metrics = self._validate_quality(workflow)
-        print(f"     Quality score: {quality_metrics.overall_quality:.3f}/1.0")
+        print(f"     Quality scores: C:{quality_metrics.completeness_score:.2f} Coh:{quality_metrics.coherence_score:.2f} E:{quality_metrics.efficiency_score:.2f} F:{quality_metrics.feasibility_score:.2f}")
         
         # 6. Estimate execution
         print("  ⏱️ Estimating execution metrics...")
@@ -265,22 +265,11 @@ class WorkflowEngine:
             'dag': workflow.dag
         })
         
-        # Calculate overall quality
-        weights = [0.3, 0.25, 0.25, 0.2]  # completeness, coherence, efficiency, feasibility
-        scores = [
-            llm_quality["completeness_score"],
-            llm_quality["coherence_score"], 
-            llm_quality["efficiency_score"],
-            llm_quality["feasibility_score"]
-        ]
-        overall_quality = sum(w * s for w, s in zip(weights, scores))
-        
         return WorkflowQualityMetrics(
             completeness_score=llm_quality["completeness_score"],
             coherence_score=llm_quality["coherence_score"],
             efficiency_score=llm_quality["efficiency_score"],
             feasibility_score=llm_quality["feasibility_score"],
-            overall_quality=overall_quality,
             validation_errors=llm_quality["validation_errors"] + structural_issues["structural_errors"],
             warnings=llm_quality["warnings"] + structural_issues["warnings"],
             suggestions=llm_quality["suggestions"] + structural_issues["suggestions"]
@@ -340,8 +329,10 @@ class WorkflowEngine:
         }
         
         # Critical issues
-        if quality_metrics.overall_quality < 0.5:
-            issues["critical_issues"].append("Overall workflow quality is poor")
+        avg_quality = (quality_metrics.completeness_score + quality_metrics.coherence_score + 
+                      quality_metrics.efficiency_score + quality_metrics.feasibility_score) / 4.0
+        if avg_quality < 0.5:
+            issues["critical_issues"].append("Average workflow quality is poor")
         
         if complexity_metrics.requires_replanning:
             issues["critical_issues"].append("Complexity analysis suggests re-planning required")
@@ -377,7 +368,8 @@ class WorkflowEngine:
             "task_id": workflow.task_id,
             "complexity_score": complexity_metrics.base_score,
             "uncertainty_score": complexity_metrics.uncertainty_score,
-            "quality_score": quality_metrics.overall_quality,
+            "avg_quality_score": (quality_metrics.completeness_score + quality_metrics.coherence_score + 
+                                 quality_metrics.efficiency_score + quality_metrics.feasibility_score) / 4.0,
             "estimated_time_hours": execution_estimate.estimated_total_time,
             "parallel_time_savings": execution_estimate.parallel_time_savings,
             
@@ -402,7 +394,6 @@ class WorkflowEngine:
                 "coherence": quality_metrics.coherence_score,
                 "efficiency": quality_metrics.efficiency_score,
                 "feasibility": quality_metrics.feasibility_score,
-                "overall_quality": quality_metrics.overall_quality,
                 "validation_errors": quality_metrics.validation_errors,
                 "warnings": quality_metrics.warnings,
                 "suggestions": quality_metrics.suggestions

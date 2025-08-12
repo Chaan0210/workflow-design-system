@@ -342,6 +342,13 @@ class PromptManager:
         )
     
     @staticmethod
+    def format_quality_assessment_prompt(main_task: str, subtasks: str, dependencies: str) -> str:
+        """Format quality assessment prompt."""
+        return WorkflowPrompts.QUALITY_VALIDATION.format(
+            main_task=main_task, subtasks=subtasks, dependencies=dependencies
+        )
+    
+    @staticmethod
     def format_dependency_prompt(original_task: str, task_a: str, task_b: str) -> str:
         """Format dependency analysis prompt."""
         return DependencyPrompts.DEPENDENCY_ANALYSIS.format(

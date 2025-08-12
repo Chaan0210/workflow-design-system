@@ -1,5 +1,6 @@
 # core/evaluation_utils.py
 import statistics
+import json
 from typing import Dict, Any, Optional, List, Set, Tuple
 import networkx as nx
 import datetime
@@ -12,15 +13,15 @@ class MetricsCalculator:
     
     @staticmethod
     def structural_metrics(pred: nx.DiGraph, gold: Optional[nx.DiGraph] = None) -> Dict[str, Any]:
-        """Calculate graph-structural indicators."""
+        """Calculate structural metrics: Num Nodes/Edges, Density, Average Degree, Parallel Efficiency."""
         # Filter out group nodes for fair comparison
         actual_nodes = [n for n in pred.nodes() if not pred.nodes[n].get('is_group', False)]
         actual_pred = pred.subgraph(actual_nodes).copy()
         
+        # Core structural metrics only
         metrics: Dict[str, Any] = {
             "num_nodes": len(actual_nodes),
             "num_edges": actual_pred.number_of_edges(),
-            "is_dag": nx.is_directed_acyclic_graph(actual_pred),
             "density": nx.density(actual_pred) if len(actual_nodes) > 1 else 0.0,
             "average_degree": (
                 sum(dict(actual_pred.degree()).values()) / len(actual_nodes)
@@ -28,49 +29,15 @@ class MetricsCalculator:
             ),
         }
 
-        # Longest path length (counted in nodes) - use filtered graph
-        if metrics["is_dag"]:
+        # Parallel Efficiency: 1 - critical_path_length/total_nodes
+        if nx.is_directed_acyclic_graph(actual_pred) and len(actual_nodes) > 0:
             try:
-                metrics["longest_path_len"] = len(nx.dag_longest_path(actual_pred))
-            except nx.NetworkXNoPath:
-                metrics["longest_path_len"] = 0
+                critical_path_length = len(nx.dag_longest_path(actual_pred))
+                metrics["parallel_efficiency"] = 1.0 - (critical_path_length / len(actual_nodes))
+            except (nx.NetworkXNoPath, ZeroDivisionError):
+                metrics["parallel_efficiency"] = 0.0
         else:
-            metrics["longest_path_len"] = None
-
-        # Gold-based stats or relative metrics
-        if gold is not None:
-            gold_nodes = set(gold.nodes())
-            pred_nodes = set(pred.nodes())
-            node_intersection = gold_nodes & pred_nodes
-            metrics["node_recall"] = (
-                len(node_intersection) / len(gold_nodes) if gold_nodes else 1.0
-            )
-
-            gold_edges = MetricsCalculator._edge_set(gold)
-            pred_edges = MetricsCalculator._edge_set(pred)
-            edge_intersection = gold_edges & pred_edges
-
-            precision = len(edge_intersection) / len(pred_edges) if pred_edges else 1.0
-            recall = len(edge_intersection) / len(gold_edges) if gold_edges else 1.0
-            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
-
-            metrics.update({
-                "edge_precision": precision,
-                "edge_recall": recall,
-                "edge_f1": f1,
-            })
-        else:
-            # When no gold standard, provide relative quality metrics
-            # These will be meaningful for comparison between approaches
-            metrics.update({
-                "edge_precision": None,
-                "edge_recall": None, 
-                "edge_f1": None,
-                "node_recall": None,
-                # Add relative structural quality metrics
-                "connectivity_ratio": metrics["num_edges"] / max(1, metrics["num_nodes"] - 1) if metrics["num_nodes"] > 1 else 0,
-                "structure_quality": min(1.0, metrics["density"] * 2) if metrics["density"] else 0  # Normalized density score
-            })
+            metrics["parallel_efficiency"] = 0.0
 
         return metrics
     
@@ -78,222 +45,168 @@ class MetricsCalculator:
     def execution_metrics(dag: nx.DiGraph, durations: Dict[str, float], 
                          resources: Optional[Dict[str, Any]] = None, *, 
                          exclude_group_nodes: bool = True) -> Dict[str, Any]:
-        """Calculate execution-oriented quality measures."""
-        # Filter out group nodes for consistent critical path calculation if requested
-        if exclude_group_nodes:
-            actual_nodes = [n for n in dag.nodes() if not dag.nodes[n].get('is_group', False)]
-            filtered_dag = dag.subgraph(actual_nodes).copy()
-            filtered_durations = {n: durations.get(n, 1.0) for n in actual_nodes}
-        else:
-            filtered_dag = dag
-            filtered_durations = durations
-            
-        serial_time = sum(filtered_durations.get(n, 1.0) for n in filtered_dag.nodes())
-
-        try:
-            crit_time = MetricsCalculator._critical_path_time(filtered_dag, filtered_durations)
-        except ValueError:
-            crit_time = None
-
-        parallel_eff = (
-            1.0 - crit_time / serial_time if crit_time and serial_time else 0.0
-        )
-
-        # Resource conflict rate
-        conflict_edges = 0
-        if resources is not None and filtered_dag.number_of_edges() > 0:
-            for u, v in filtered_dag.edges():
-                r_u, r_v = resources.get(u), resources.get(v)
-                if r_u is None or r_v is None:
-                    continue
-                if isinstance(r_u, set) and isinstance(r_v, set):
-                    if r_u & r_v:
-                        conflict_edges += 1
-                elif r_u == r_v:
-                    conflict_edges += 1
-            conflict_rate = conflict_edges / filtered_dag.number_of_edges()
-        else:
-            conflict_rate = 0.0
-
+        """Calculate execution-oriented quality measures (kept for compatibility)."""
+        # This method is kept for compatibility but returns minimal metrics
+        # since execution details are now handled in structural_metrics
         return {
-            "serial_time": serial_time,
-            "critical_path_time": crit_time,
-            # ── 새 필드들 ────────────────────
-            "parallel_efficiency_path": parallel_eff,
-            "parallel_efficiency": parallel_eff,               # (이전 호환용)
-            # 필요 시 블록 기반 값도 넣을 수 있도록 placeholder
-            "parallel_efficiency_block": None,                 # 채워 넣을 곳 마련
-            "resource_conflict_rate": conflict_rate,
+            "parallel_efficiency": 0.0  # Placeholder for compatibility
         }
     
     @staticmethod
-    def complexity_metrics(workflow_data: Dict[str, Any]) -> Dict[str, float]:
-        """Calculate complexity metrics for a workflow."""
+    def complexity_metrics(workflow_data: Dict[str, Any], llm_client=None, main_task: str = "") -> Dict[str, float]:
+        """Calculate complexity metrics using LLM analysis."""
         subtasks = workflow_data.get('subtasks', [])
         dag = workflow_data.get('dag')
         
-        if not dag or not subtasks:
+        if not subtasks:
             return {
                 "domain_complexity": 5.0,
                 "coordination_complexity": 5.0,
-                "computational_complexity": 5.0,
-                "mode_heterogeneity": 0.5,
-                "structural_complexity": 0.5
+                "computational_complexity": 5.0
             }
         
-        # Mode heterogeneity
-        wide_count = len([st for st in subtasks if getattr(st, 'mode', None) == 'WIDE'])
-        deep_count = len([st for st in subtasks if getattr(st, 'mode', None) == 'DEEP'])
-        total_count = len(subtasks)
+        # If no LLM client provided, use heuristic fallback
+        if llm_client is None:
+            return {
+                "domain_complexity": min(10.0, len(subtasks) * 0.5 + 3.0),
+                "coordination_complexity": min(10.0, dag.number_of_edges() * 0.1 + 2.0) if dag else 3.0,
+                "computational_complexity": min(10.0, len(subtasks) * 0.8 + 2.0)
+            }
         
-        if total_count > 0:
-            wide_ratio = wide_count / total_count
-            mode_heterogeneity = 2 * wide_ratio * (1 - wide_ratio)  # Max at 0.5/0.5 split
-        else:
-            mode_heterogeneity = 0.0
-        
-        # Structural complexity based on DAG properties
-        if dag.number_of_nodes() > 0:
-            density = nx.density(dag)
-            avg_degree = sum(dict(dag.degree()).values()) / dag.number_of_nodes()
-            structural_complexity = min(1.0, (density + avg_degree / dag.number_of_nodes()) / 2)
-        else:
-            structural_complexity = 0.0
-        
-        return {
-            "domain_complexity": min(10.0, total_count * 0.5 + 3.0),  # Rough estimate
-            "coordination_complexity": min(10.0, dag.number_of_edges() * 0.1 + 2.0),
-            "computational_complexity": min(10.0, wide_count * 0.8 + deep_count * 1.2 + 2.0),
-            "mode_heterogeneity": mode_heterogeneity,
-            "structural_complexity": structural_complexity
-        }
+        # Use LLM for complexity analysis
+        try:
+            from prompts import PromptManager
+            subtasks_info = [{"id": st.id if hasattr(st, 'id') else f"S{i}", 
+                            "desc": st.description if hasattr(st, 'description') else str(st)} 
+                           for i, st in enumerate(subtasks)]
+            
+            prompt = PromptManager.format_complexity_analysis_prompt(
+                main_task,
+                json.dumps(subtasks_info, ensure_ascii=False)
+            )
+            
+            analysis = llm_client.call_json(prompt)
+            
+            return {
+                "domain_complexity": analysis.get("domain_complexity", 5.0),
+                "coordination_complexity": analysis.get("coordination_complexity", 5.0),
+                "computational_complexity": analysis.get("computational_complexity", 5.0)
+            }
+            
+        except Exception:
+            # Fallback to heuristic if LLM fails
+            return {
+                "domain_complexity": min(10.0, len(subtasks) * 0.5 + 3.0),
+                "coordination_complexity": min(10.0, dag.number_of_edges() * 0.1 + 2.0) if dag else 3.0,
+                "computational_complexity": min(10.0, len(subtasks) * 0.8 + 2.0)
+            }
     
     @staticmethod
     def _edge_set(g: nx.DiGraph) -> Set[Tuple[str, str]]:
         """Return set of directed edges as (u, v) tuples."""
         return {(u, v) for u, v in g.edges()}
     
-    @staticmethod
-    def _critical_path_time(dag: nx.DiGraph, durations: Dict[str, float]) -> float:
-        """Calculate longest path cost according to durations."""
-        if not nx.is_directed_acyclic_graph(dag):
-            raise ValueError("Critical path defined only for DAGs.")
-
-        dist: Dict[str, float] = {}
-        for node in nx.topological_sort(dag):
-            preds = dag.predecessors(node)
-            dist[node] = max((dist[p] for p in preds), default=0.0) + durations.get(node, 1.0)
-        return max(dist.values(), default=0.0)
+    # Removed _critical_path_time method as it's no longer needed
 
 
 class QualityAssessor:
-    """Unified quality assessment for workflows."""
+    """LLM-based quality assessment for workflows."""
     
     @staticmethod
     def assess_workflow_quality(workflow_data: Dict[str, Any], 
                                subtasks: List[SubTask],
-                               dag: nx.DiGraph) -> Dict[str, float]:
-        """Assess overall workflow quality."""
+                               dag: nx.DiGraph,
+                               llm_client=None,
+                               main_task: str = "") -> Dict[str, float]:
+        """Assess workflow quality using LLM analysis."""
         
-        # Basic completeness check
-        if not subtasks:
-            completeness = 0.0
-        else:
-            completeness = min(1.0, len(subtasks) / 5.0)  # Assume 5 subtasks = complete
+        # If no LLM client provided, use heuristic fallback
+        if llm_client is None:
+            print("         ⚠️  Using null fallback (no LLM client)")
+            return QualityAssessor._heuristic_quality_assessment(subtasks, dag)
         
-        # Coherence based on DAG structure
-        if dag.number_of_nodes() == 0:
-            coherence = 0.0
-        elif not nx.is_directed_acyclic_graph(dag):
-            coherence = 0.0
-        else:
-            # Base coherence on connectivity
-            expected_edges = len(subtasks) * 0.3  # Expect ~30% connectivity
-            actual_edges = dag.number_of_edges()
-            coherence = min(1.0, actual_edges / max(expected_edges, 1))
-        
-        # Efficiency based on parallel structure
+        # Use LLM for quality assessment
         try:
-            if dag.number_of_nodes() > 0:
-                levels = {}
-                for node in nx.topological_sort(dag):
-                    preds = list(dag.predecessors(node))
-                    levels[node] = 0 if not preds else max(levels[p] for p in preds) + 1
-                
-                max_level = max(levels.values()) if levels else 0
-                efficiency = 1.0 - (max_level + 1) / dag.number_of_nodes()
-                efficiency = max(0.0, efficiency)
-            else:
-                efficiency = 0.0
-        except:
-            efficiency = 0.5
-        
-        # Feasibility - assume high unless there are obvious problems
-        feasibility = 0.8
-        
-        # Check for isolated nodes
-        isolated_nodes = list(nx.isolates(dag))
-        if isolated_nodes:
-            efficiency *= 0.9
-            feasibility *= 0.9
-        
-        # Overall quality weighted average
-        weights = [0.3, 0.25, 0.25, 0.2]  # completeness, coherence, efficiency, feasibility
-        overall_quality = sum(w * s for w, s in zip(weights, [completeness, coherence, efficiency, feasibility]))
+            from prompts import PromptManager
+            
+            # Prepare subtasks and dependencies for LLM
+            subtasks_info = [{"id": st.id if hasattr(st, 'id') else f"S{i}", 
+                            "desc": st.description if hasattr(st, 'description') else str(st)} 
+                           for i, st in enumerate(subtasks)]
+            dependencies = list(dag.edges()) if dag else []
+            
+            # Format quality assessment prompt
+            prompt = PromptManager.format_quality_assessment_prompt(
+                main_task,
+                json.dumps(subtasks_info, ensure_ascii=False),
+                str(dependencies)
+            )
+            
+            analysis = llm_client.call_json(prompt)
+            
+            # Extract scores with fallback to defaults
+            completeness = analysis.get("completeness_score", 0.5)
+            coherence = analysis.get("coherence_score", 0.5)
+            efficiency = analysis.get("efficiency_score", 0.5)
+            feasibility = analysis.get("feasibility_score", 0.5)
+            
+            print(f"         ✅ LLM quality scores: C:{completeness:.3f} Coh:{coherence:.3f} E:{efficiency:.3f} F:{feasibility:.3f}")
+            
+            return {
+                "completeness_score": round(completeness, 3),
+                "coherence_score": round(coherence, 3),
+                "efficiency_score": round(efficiency, 3),
+                "feasibility_score": round(feasibility, 3)
+            }
+            
+        except Exception as e:
+            # Fallback to heuristic if LLM fails
+            print(f"         ⚠️  LLM quality assessment failed, using null fallback: {e}")
+            return QualityAssessor._heuristic_quality_assessment(subtasks, dag)
+    
+    @staticmethod
+    def _heuristic_quality_assessment(subtasks: List[SubTask], dag: nx.DiGraph) -> Dict[str, float]:
+        """Fallback heuristic quality assessment."""
+        # When LLM is unavailable, return null values to indicate missing data
+        # All quality metrics should ideally come from LLM analysis
+        completeness = None 
+        coherence = None     
+        efficiency = None    # Different from structural parallel efficiency
+        feasibility = None
         
         return {
-            "completeness_score": round(completeness, 3),
-            "coherence_score": round(coherence, 3),
-            "efficiency_score": round(efficiency, 3),
-            "feasibility_score": round(feasibility, 3),
-            "overall_quality": round(overall_quality, 3)
+            "completeness_score": completeness,
+            "coherence_score": coherence,
+            "efficiency_score": efficiency,
+            "feasibility_score": feasibility
         }
     
     @staticmethod
     def generate_recommendations(per_approach_metrics: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-        """Generate recommendations based on evaluation results."""
+        """Generate recommendations based on simplified evaluation metrics."""
         
         if not per_approach_metrics:
             return {"error": "No approaches to evaluate"}
         
-        # Normalize build_time for comparison (invert so lower time = higher score)
-        build_times = [metrics.get("build_time", 1) for metrics in per_approach_metrics.values()]
-        max_build_time = max(build_times) if build_times else 1
-        
-        normalized_metrics = {}
-        for approach, metrics in per_approach_metrics.items():
-            normalized = metrics.copy()
-            # Invert build_time so faster approaches get higher scores
-            normalized["build_speed"] = 1 - (metrics.get("build_time", 1) / max_build_time)
-            normalized_metrics[approach] = normalized
-        
-        # Scoring weights for different use cases
+        # Simplified scoring weights focusing on our core metrics
         use_case_weights = {
-            "speed_focused": {
-                "build_speed": 0.4,  # Use build_speed instead of build_time
-                "parallel_efficiency": 0.3,
-                "edge_f1": 0.1,
-                "node_recall": 0.1,
-                "connectivity_ratio": 0.05,
-                "structure_quality": 0.05,
-                "resource_conflict_rate": -0.1,
+            "structural_focused": {
+                "num_nodes": 0.1,
+                "num_edges": 0.1,
+                "density": 0.2,
+                "average_degree": 0.2,
+                "parallel_efficiency": 0.4
             },
             "quality_focused": {
-                "edge_f1": 0.3,
-                "node_recall": 0.25,
-                "connectivity_ratio": 0.15,
-                "structure_quality": 0.15,
-                "parallel_efficiency": 0.1,
-                "resource_conflict_rate": -0.1,
+                "completeness_score": 0.3,
+                "coherence_score": 0.25,
+                "efficiency_score": 0.25,
+                "feasibility_score": 0.2
             },
-            "balanced": {
-                "build_speed": 0.2,
-                "parallel_efficiency": 0.2,
-                "edge_f1": 0.2,
-                "node_recall": 0.15,
-                "connectivity_ratio": 0.125,
-                "structure_quality": 0.125,
-                "resource_conflict_rate": -0.1,
+            "complexity_focused": {
+                "domain_complexity": -0.33,  # Lower is better
+                "coordination_complexity": -0.33,
+                "computational_complexity": -0.34
             }
         }
         
@@ -304,11 +217,10 @@ class QualityAssessor:
             best_score = float('-inf')
             
             scores = {}
-            for approach, metrics in normalized_metrics.items():
+            for approach, metrics in per_approach_metrics.items():
                 score = 0
                 for metric, weight in weights.items():
                     value = metrics.get(metric, 0)
-                    # Skip None values (missing gold standard metrics) but count relative metrics
                     if value is not None:
                         score += value * weight
                 scores[approach] = score
@@ -322,7 +234,7 @@ class QualityAssessor:
                 "score": best_score,
                 "all_scores": scores,
                 "reasoning": QualityAssessor._generate_reasoning(best_approach, use_case, 
-                                                               normalized_metrics[best_approach] if best_approach else {})
+                                                               per_approach_metrics[best_approach] if best_approach else {})
             }
         
         return recommendations
@@ -336,32 +248,31 @@ class QualityAssessor:
         
         reasoning_parts = [f"{approach} is recommended for {use_case} use case because:"]
         
-        if use_case == "speed_focused":
-            build_speed = metrics.get("build_speed", 0)
+        if use_case == "structural_focused":
             parallel_eff = metrics.get("parallel_efficiency", 0)
-            build_time = metrics.get("build_time", 0)
-            reasoning_parts.append(f"- Fast build time ({build_time:.2f}s)")
-            reasoning_parts.append(f"- Good parallel efficiency ({parallel_eff:.3f})")
+            density = metrics.get("density", 0)
+            reasoning_parts.append(f"- High parallel efficiency ({parallel_eff:.3f})")
+            reasoning_parts.append(f"- Good graph density ({density:.3f})")
             
         elif use_case == "quality_focused":
-            edge_f1 = metrics.get("edge_f1")
-            node_recall = metrics.get("node_recall")
-            connectivity = metrics.get("connectivity_ratio", 0)
-            structure_quality = metrics.get("structure_quality", 0)
+            completeness = metrics.get("completeness_score", 0)
+            coherence = metrics.get("coherence_score", 0)
+            efficiency = metrics.get("efficiency_score", 0)
+            feasibility = metrics.get("feasibility_score", 0)
             
-            if edge_f1 is not None and node_recall is not None:
-                reasoning_parts.append(f"- Excellent edge accuracy (F1: {edge_f1:.3f})")
-                reasoning_parts.append(f"- High node recall ({node_recall:.3f})")
-            else:
-                reasoning_parts.append(f"- Good structural connectivity ({connectivity:.3f})")
-                reasoning_parts.append(f"- High structure quality ({structure_quality:.3f})")
+            reasoning_parts.append(f"- High completeness ({completeness:.3f})")
+            reasoning_parts.append(f"- Good coherence ({coherence:.3f})")
+            reasoning_parts.append(f"- Efficient structure ({efficiency:.3f})")
+            reasoning_parts.append(f"- High feasibility ({feasibility:.3f})")
             
-        elif use_case == "balanced":
-            reasoning_parts.append("- Well-balanced performance across all metrics")
-        
-        conflict_rate = metrics.get("resource_conflict_rate", 0)
-        if conflict_rate < 0.1:
-            reasoning_parts.append(f"- Low resource conflicts ({conflict_rate:.3f})")
+        elif use_case == "complexity_focused":
+            domain = metrics.get("domain_complexity", 0)
+            coordination = metrics.get("coordination_complexity", 0)
+            computational = metrics.get("computational_complexity", 0)
+            
+            reasoning_parts.append(f"- Low domain complexity ({domain:.1f})")
+            reasoning_parts.append(f"- Low coordination complexity ({coordination:.1f})")
+            reasoning_parts.append(f"- Low computational complexity ({computational:.1f})")
         
         return "\n".join(reasoning_parts)
 
@@ -377,7 +288,7 @@ class ComparisonEvaluator:
         self.resources_db = resources_db or {}
     
     def evaluate_comparison_results(self, comparison_results: Dict[str, Any]) -> Dict[str, Any]:
-        """Evaluate results from compare_dag_approaches()."""
+        """Evaluate results from compare_dag_approaches() with simplified metrics."""
         
         # Extract task_id from successful approach
         task_id = None
@@ -386,12 +297,7 @@ class ComparisonEvaluator:
                 task_id = result.get("metrics", {}).get("task_id")
                 break
         
-        # Get ground truth data
-        gold = self.gold_dags.get(task_id) if task_id else None
-        durations = self.durations_db.get(task_id, {}) if task_id else {}
-        resources = self.resources_db.get(task_id, {}) if task_id else None
-        
-        # Evaluate each approach
+        # Evaluate each approach with simplified metrics
         per_approach = {}
         for approach_name, result in comparison_results.items():
             if approach_name == "comparison_summary" or not result.get("success", False):
@@ -399,29 +305,32 @@ class ComparisonEvaluator:
             
             dag: nx.DiGraph = result["dag"]
             
-            structural = MetricsCalculator.structural_metrics(dag, gold)
-            execution = MetricsCalculator.execution_metrics(dag, durations, resources)
+            # Get simplified structural metrics only
+            structural = MetricsCalculator.structural_metrics(dag)
             
-            # Add build performance metrics for recommendations
-            build_metrics = result.get("metrics", {})
-            performance_metrics = {
-                "build_time": build_metrics.get("build_time", 0),
-                "total_llm_calls": build_metrics.get("total_llm_calls", 0)
+            # Get workflow evaluation if available
+            workflow_eval = result.get("workflow_evaluation", {})
+            quality_metrics = workflow_eval.get("quality_metrics", {})
+            complexity_metrics = workflow_eval.get("complexity_metrics", {})
+            
+            # Combine all metrics
+            per_approach[approach_name] = {
+                **structural,
+                **quality_metrics,
+                **complexity_metrics
             }
-            
-            per_approach[approach_name] = {**structural, **execution, **performance_metrics}
         
-        # Generate aggregate statistics
+        # Generate aggregate statistics for numeric metrics only
         aggregate_summary = {}
         if per_approach:
             keys = next(iter(per_approach.values())).keys()
             for k in keys:
-                vals = [v[k] for v in per_approach.values() if v[k] is not None]
+                vals = [v[k] for v in per_approach.values() if isinstance(v[k], (int, float))]
                 if not vals:
                     continue
                 aggregate_summary[k] = {
                     "mean": statistics.mean(vals),
-                    "best": max(vals) if k not in {"critical_path_time", "resource_conflict_rate", "serial_time"} else min(vals),
+                    "best": max(vals) if k != "domain_complexity" and k != "coordination_complexity" and k != "computational_complexity" else min(vals),
                 }
         
         # Generate recommendations

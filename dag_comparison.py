@@ -6,13 +6,12 @@ from models import SubTask
 from workflow_engine import WorkflowEngine
 from core import JsonSerializer, ComparisonEvaluator
 from core.evaluation_utils import MetricsCalculator, QualityAssessor
-from core.validation_utils import WorkflowValidator, QualityMetricsValidator
+from core.validation_utils import WorkflowValidator
 
 from approaches.bidirectional import BidirectionalApproach
 from approaches.hierarchical import HierarchicalApproach  
 from approaches.matrix import MatrixApproach
 from approaches.bidirectional_parallel import BidirectionalParallelApproach
-from approaches.matrix_parallel import MatrixParallelApproach
 
 class DAGComparison:
     """Main DAG comparison framework with optimization support."""
@@ -27,7 +26,7 @@ class DAGComparison:
         if include_parallel_approaches:
             self.approaches.update({
                 "bidirectional_parallel": BidirectionalParallelApproach(),
-                "matrix_parallel": MatrixParallelApproach()
+                "matrix": MatrixApproach()
             })
         else:
             # Fallback to original approaches if parallel is disabled
@@ -83,7 +82,7 @@ class DAGComparison:
             try:
                 dag, metrics = approach.build_dag(subtasks, task)
                 
-                # Evaluate workflow quality and structure
+                # Evaluate workflow quality and structure with LLM support
                 evaluation_results = self._evaluate_approach_workflow(
                     dag, subtasks, task, metrics, name
                 )
@@ -120,20 +119,22 @@ class DAGComparison:
                     # Print workflow evaluation results
                     eval_results = evaluation_results
                     print(f"   📊 Workflow Evaluation:")
-                    print(f"      Quality Score: {eval_results['quality_metrics']['overall_quality']:.3f}")
-                    print(f"      Completeness: {eval_results['quality_metrics']['completeness_score']:.3f}")
-                    print(f"      Coherence: {eval_results['quality_metrics']['coherence_score']:.3f}")
-                    print(f"      Efficiency: {eval_results['quality_metrics']['efficiency_score']:.3f}")
-                    print(f"      Feasibility: {eval_results['quality_metrics']['feasibility_score']:.3f}")
+                    
+                    def format_score(score):
+                        return f"{score:.3f}" if score is not None else "null"
+                    
+                    print(f"      Completeness: {format_score(eval_results['quality_metrics']['completeness_score'])}")
+                    print(f"      Coherence: {format_score(eval_results['quality_metrics']['coherence_score'])}")
+                    print(f"      Efficiency: {format_score(eval_results['quality_metrics']['efficiency_score'])}")
+                    print(f"      Feasibility: {format_score(eval_results['quality_metrics']['feasibility_score'])}")
                     
                     # Print structural metrics
                     struct_metrics = eval_results['structural_metrics']
                     print(f"   🏗️  Structural Metrics:")
                     print(f"      Nodes: {struct_metrics['num_nodes']}, Edges: {struct_metrics['num_edges']}")
-                    print(f"      Is DAG: {struct_metrics['is_dag']}")
                     print(f"      Density: {struct_metrics['density']:.3f}")
-                    if struct_metrics.get('longest_path_len'):
-                        print(f"      Longest Path: {struct_metrics['longest_path_len']} nodes")
+                    print(f"      Average Degree: {struct_metrics['average_degree']:.3f}")
+                    print(f"      Parallel Efficiency: {struct_metrics['parallel_efficiency']:.3f}")
                     
                     # Print complexity metrics
                     complexity = eval_results['complexity_metrics']
@@ -141,7 +142,6 @@ class DAGComparison:
                     print(f"      Domain: {complexity['domain_complexity']:.1f}/10")
                     print(f"      Coordination: {complexity['coordination_complexity']:.1f}/10")
                     print(f"      Computational: {complexity['computational_complexity']:.1f}/10")
-                    print(f"      Mode Heterogeneity: {complexity['mode_heterogeneity']:.3f}")
                     
                     # Print validation issues
                     validation = eval_results['validation_issues']
@@ -186,7 +186,7 @@ class DAGComparison:
         self.approaches.update(legacy_approaches)
         
         original_approaches = ["bidirectional", "matrix"]
-        optimized_approaches = ["bidirectional_parallel", "matrix_parallel"]
+        optimized_approaches = ["bidirectional_parallel", "matrix"]
         
         comparison_results = self.compare_approaches(
             task, subtasks, 
@@ -323,47 +323,47 @@ class DAGComparison:
     
     def _evaluate_approach_workflow(self, dag, subtasks: List[SubTask], task: str, 
                                    build_metrics: Dict[str, Any], approach_name: str) -> Dict[str, Any]:
-        """Comprehensive workflow evaluation for a single approach."""
+        """Simplified workflow evaluation for a single approach."""
         print(f"      🔍 Evaluating {approach_name} workflow...")
         
-        # 1. Structural metrics using MetricsCalculator
+        # Try to get LLM client for quality analysis
+        llm_client = None
+        try:
+            from core import LLMClient
+            llm_client = LLMClient()
+        except Exception as e:
+            print(f"      ⚠️  LLM client not available, using heuristic fallback: {e}")
+        
+        # 1. Structural metrics (simplified)
         structural_metrics = MetricsCalculator.structural_metrics(dag)
         
-        # 2. Quality assessment using QualityAssessor
+        # 2. Quality assessment with LLM support
         quality_metrics = QualityAssessor.assess_workflow_quality(
-            {"subtasks": subtasks, "dag": dag}, subtasks, dag
+            {"subtasks": subtasks, "dag": dag}, 
+            subtasks, 
+            dag,
+            llm_client=llm_client,
+            main_task=task
         )
         
-        # 3. Complexity metrics calculation
-        complexity_metrics = MetricsCalculator.complexity_metrics({
-            "subtasks": subtasks,
-            "dag": dag
-        })
+        # 3. Complexity metrics with LLM support
+        complexity_metrics = MetricsCalculator.complexity_metrics(
+            {"subtasks": subtasks, "dag": dag},
+            llm_client=llm_client,
+            main_task=task
+        )
         
-        # 4. Workflow validation using WorkflowValidator
+        # 4. Basic validation (keep minimal validation)
         validation_issues = self.workflow_validator.validate_workflow_structure({
             "subtasks": subtasks,
             "dag": dag
         })
         
-        # 5. Execution feasibility validation
-        execution_issues = self.workflow_validator.validate_execution_feasibility(subtasks, dag)
-        
-        # 6. Quality metrics validation and assessment
-        quality_report = QualityMetricsValidator.generate_quality_report(quality_metrics)
-        
-        # 7. Execution metrics (if we have durations data)
-        durations = {st.id: 1.0 for st in subtasks}  # Default duration
-        execution_metrics = MetricsCalculator.execution_metrics(dag, durations)
-        
         return {
             "structural_metrics": structural_metrics,
             "quality_metrics": quality_metrics,
             "complexity_metrics": complexity_metrics,
-            "execution_metrics": execution_metrics,
             "validation_issues": validation_issues,
-            "execution_feasibility": execution_issues,
-            "quality_report": quality_report,
             "approach_name": approach_name,
             "build_metrics": build_metrics
         }
@@ -373,9 +373,7 @@ class DAGComparison:
         comparison = {
             "quality_comparison": {},
             "complexity_comparison": {},
-            "structural_comparison": {},
-            "execution_comparison": {},
-            "recommendations": {}
+            "structural_comparison": {}
         }
         
         successful_results = {}
@@ -396,36 +394,11 @@ class DAGComparison:
             quality = eval_data["quality_metrics"]
             complexity = eval_data["complexity_metrics"]
             structural = eval_data["structural_metrics"]
-            execution = eval_data["execution_metrics"]
             
             comparison["quality_comparison"][approach_name] = quality
             comparison["complexity_comparison"][approach_name] = complexity
             comparison["structural_comparison"][approach_name] = structural
-            comparison["execution_comparison"][approach_name] = execution
         
-        # Generate recommendations using QualityAssessor
-        quality_metrics_for_rec = {}
-        for approach_name, eval_data in successful_results.items():
-            metrics = {}
-            # Flatten relevant metrics for recommendation
-            metrics.update(eval_data["structural_metrics"])
-            metrics.update(eval_data["execution_metrics"])
-            quality_metrics_for_rec[approach_name] = metrics
-        
-        if quality_metrics_for_rec:
-            recommendations = QualityAssessor.generate_recommendations(quality_metrics_for_rec)
-            comparison["recommendations"] = recommendations
-            
-            # Print recommendations summary
-            print("\n🎯 APPROACH RECOMMENDATIONS:")
-            for use_case, rec in recommendations.items():
-                print(f"\n{use_case.upper().replace('_', ' ')}:")
-                print(f"   Recommended: {rec['recommended_approach']}")
-                print(f"   Score: {rec['score']:.3f}")
-                reasoning_lines = rec['reasoning'].split('\n')
-                for line in reasoning_lines:
-                    if line.strip():
-                        print(f"   {line}")
         
         # Print detailed comparison table
         self._print_evaluation_table(successful_results)
@@ -447,16 +420,19 @@ class DAGComparison:
         
         # Quality metrics
         print("QUALITY METRICS:")
-        quality_metrics = ["completeness_score", "coherence_score", "efficiency_score", "feasibility_score", "overall_quality"]
+        quality_metrics = ["completeness_score", "coherence_score", "efficiency_score", "feasibility_score"]
         for metric in quality_metrics:
             print(f"  {metric.replace('_', ' ').title():<28}", end="")
             for approach in approaches:
                 value = successful_results[approach]["quality_metrics"].get(metric, 0)
-                print(f"{value:<15.3f}", end="")
+                if value is not None:
+                    print(f"{value:<15.3f}", end="")
+                else:
+                    print(f"{'null':<15}", end="")
             print()
         
         print("\nSTRUCTURAL METRICS:")
-        structural_metrics = ["num_nodes", "num_edges", "density", "average_degree"]
+        structural_metrics = ["num_nodes", "num_edges", "density", "average_degree", "parallel_efficiency"]
         for metric in structural_metrics:
             print(f"  {metric.replace('_', ' ').title():<28}", end="")
             for approach in approaches:
@@ -468,7 +444,7 @@ class DAGComparison:
             print()
         
         print("\nCOMPLEXITY METRICS:")
-        complexity_metrics = ["domain_complexity", "coordination_complexity", "computational_complexity", "mode_heterogeneity"]
+        complexity_metrics = ["domain_complexity", "coordination_complexity", "computational_complexity"]
         for metric in complexity_metrics:
             print(f"  {metric.replace('_', ' ').title():<28}", end="")
             for approach in approaches:
@@ -476,23 +452,7 @@ class DAGComparison:
                 print(f"{value:<15.3f}", end="")
             print()
         
-        print("\nEXECUTION METRICS:")
-        execution_metrics = ["parallel_efficiency", "parallel_efficiency_path", "parallel_efficiency_block"]
-        for metric in execution_metrics:
-            # Show only if at least one approach has this metric
-            has_metric = any(successful_results[approach]["execution_metrics"].get(metric) is not None 
-                           for approach in approaches)
-            if not has_metric:
-                continue
-                
-            print(f"  {metric.replace('_', ' ').title():<28}", end="")
-            for approach in approaches:
-                value = successful_results[approach]["execution_metrics"].get(metric, 0)
-                if value is not None:
-                    print(f"{value:<15.3f}", end="")
-                else:
-                    print(f"{'N/A':<15}", end="")
-            print()
+        # Execution metrics are now included in structural metrics
         
         print("-" * 100)
 
