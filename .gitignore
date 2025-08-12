@@ -21,5 +21,4 @@ workflow_outputs/
 CLAUDE.md
 CLAUDE.md.backup
 .claude/
-.mcp.json
 requirements-dev.txt
